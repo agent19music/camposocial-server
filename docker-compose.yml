@@ -1,0 +1,17 @@
+services:
+  flask-app:
+    build: .
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis  # Ensure Redis starts before Flask
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+  redis:
+    image: "redis:latest"
+    container_name: redis_container
+    ports:
+      - "6379:6379"
+    restart: always
