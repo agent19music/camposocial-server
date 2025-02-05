@@ -1,4 +1,4 @@
-from models import db, Products, Wishlists, Reviews, Users, ProductVariation, ProductImages, Order,Seller
+from models import db, Products, Wishlists, Reviews, Users, ProductVariation, ProductImages, Order,Seller,Cart, CartItem, OrderItem
 from flask import request, jsonify, Blueprint,make_response
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
@@ -8,6 +8,7 @@ from datetime import datetime
 import base64
 import os
 import boto3
+import requests
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -18,6 +19,7 @@ R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
+PAYSTACK_SECRET_KEY = os.getenv('PAYSTACK_SECRET_KEY')
 
 
 s3_client = boto3.client(
@@ -25,7 +27,51 @@ s3_client = boto3.client(
     endpoint_url=R2_ENDPOINT_URL,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY
-)    
+)   
+
+@marketplace_bp.route('/products', methods=['GET'])
+def get_products():
+    """
+    Get all products.
+    """
+    try:
+        products = Products.query.all()
+        result = [
+            {
+                'id': product.id,
+                'title': product.title,
+                'description': product.description,
+                'contact_info': product.contact_info,
+                'brand': product.brand,
+                'price': product.price,
+                'category': product.category,
+                'created_at': product.created_at.isoformat(),
+                'updated_at': product.updated_at.isoformat(),
+                'average_rating': product.average_rating(), 
+                # Include URLs to product images if needed
+                'images': [image.image_url for image in product.images],
+                # Include variations if needed
+                'variations': [
+                    {
+                        'size': variation.variation_name,
+                        'color': variation.variation_value,
+                        'stock': variation.stock,
+                        'price': variation.price
+                    } for variation in product.variations
+                ],
+               'seller': {
+    'name': product.seller.display_name if product.seller else None, 
+    'avatar': product.seller.avatar if product.seller else None,
+    'verified': product.seller.is_verified if product.seller else None,
+    'id': product.seller.id if product.seller else None, 
+
+
+}
+            } for product in products
+        ]
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @marketplace_bp.route('/seller', methods=['POST'])
 @jwt_required()  # Requires JWT authentication
@@ -87,17 +133,16 @@ def add_seller():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
-@marketplace_bp.route('/seller/<string:seller_id>', methods=['GET'])
+
+@marketplace_bp.route('/sellers/<string:seller_id>', methods=['GET'])
 def get_seller(seller_id):
     try:
         seller = Seller.query.filter_by(id=seller_id).first()
         if not seller:
             return jsonify({"error": "Seller not found"}), 404
 
-        # Calculating total products
+        # Calculate total products and sales
         total_products = seller.product_count()
-
-        # Calculating total sales
         total_sales = seller.total_sales()
 
         # Calculate average rating across all products
@@ -107,59 +152,379 @@ def get_seller(seller_id):
 
         average_rating = sum(all_reviews) / len(all_reviews) if all_reviews else None
 
+        # Construct seller data with detailed product info
         seller_data = {
-            "display_name": seller.display_name,
-            "is_verified": seller.is_verified,
+            "name": seller.display_name,
+            "isVerified": seller.is_verified,
             "about": seller.about,
             "avatar": seller.avatar,
             "total_products": total_products,
-            "total_sales": total_sales,
-            "average_rating": average_rating,
+            "totalSales": total_sales,
+            "rating": average_rating,
+            "products": []
         }
 
+        for product in seller.products:
+            # Get images and variations for each product
+            images = [image.image_url for image in product.images]
+            variations = [
+                {
+                    "id": variation.id,
+                    "name": variation.variation_name,
+                    "value": variation.variation_value,
+                    "price": variation.price,
+                    "stock": variation.stock
+                }
+                for variation in product.variations
+            ]
+
+            # Add product with images, variations, and reviews to seller data
+            product_data = {
+                "id": product.id,
+                "title": product.title,
+                "description": product.description,
+                "price": product.price,
+                "category": product.category,
+                "created_at": product.created_at,
+                "updated_at": product.updated_at,
+                "images": images,
+                "variations": variations,
+                "reviews": [{"rating": review.rating, "content": review.content} for review in product.reviews]
+            }
+
+            seller_data["products"].append(product_data)
+
         return jsonify(seller_data), 200
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500    
+        return jsonify({"error": str(e)}), 500
+
 # Route to get a specific product by id
-@marketplace_bp.route('/product/<int:product_id>', methods=['GET'])
-def get_product(product_id):
-    product = Products.query.filter_by(id=product_id).first()
-    if not product:
-        return jsonify({'message': 'Product not found'}), 404
-    
-    # Calculate the average rating for the product
-    average_rating = db.session.query(func.avg(Reviews.rating)).filter(Reviews.product_id == product.id).scalar()
-    if average_rating is None:
-        average_rating = 0  # If there are no reviews, set average rating to 0
-    else:
-        average_rating = round(average_rating, 1)
-                
-    reviews = []
-    for review in product.reviews:
-        review_data = {
-            'id': review.id,
-            'text': review.text,
-            'rating': review.rating,
-            'username': review.user.username,  # Get the username of the user who posted the review
-            'user_image_url': review.user.image_url if review.user.image_url else None  # Get the image data of the user who posted the review
+@marketplace_bp.route('/products/<string:product_id>', methods=['GET'])
+def get_single_product(product_id):
+    try:
+        # Fetch the product by ID
+        product = Products.query.filter_by(id=product_id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+
+        # Get images associated with the product
+        images = [image.image_url for image in product.images]
+
+        # Get variations for the product
+        variations = [
+            {
+                "id": variation.id,
+                "name": variation.variation_name,
+                "value": variation.variation_value,
+                "price": variation.price,
+                "stock": variation.stock
+            }
+            for variation in product.variations
+        ]
+
+        # Get reviews for the product
+        reviews = [
+            {
+                "rating": review.rating,
+                "text": review.text,
+                "username": review.user.username if review.user else None,  # Assumes `reviewer` relation
+                "avatar": review.user.avatar if review.user else None  # Assumes `reviewer` relation
+
+            }
+            for review in product.reviews
+        ]
+
+        # Structure the product data
+        product_data = {
+            "id": product.id,
+            'average_rating': product.average_rating(),
+            "title": product.title,
+            "description": product.description,
+            "price": product.price,
+            "category": product.category,
+            "contact_info": product.contact_info,
+            "brand": product.brand,
+            "created_at": product.created_at,
+            "updated_at": product.updated_at,
+            "seller_id": product.seller_id,
+            "sellerName": product.seller.display_name,
+            "sellerAvatar" : product.seller.avatar,
+            "sellerIsVerified": product.seller.is_verified,
+            "images": images,
+            "variations": variations,
+            "reviews": reviews,
         }
-        reviews.append(review_data)
+
+        return jsonify(product_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@marketplace_bp.route('/cart/add', methods=['POST'])
+@jwt_required()  # Assuming you want to require authentication
+def add_to_cart():
+    data = request.get_json()
+    user_id = get_jwt_identity()  # Get the user ID from the JWT token
+    product_id = data.get('product_id')
+    variation_id = data.get('product_variation_id')
+    quantity = data.get('quantity', 1)
     
-    # Include the contact information of the product
-    contact_info = product.contact_info if product.contact_info else product.user.phone_no
+    if not product_id:
+        return jsonify({'error': 'Product ID is required'}), 400
+
+    # Find or create a cart for the user
+    cart = Cart.query.filter_by(user_id=user_id).first()
+    if not cart:
+        cart = Cart(user_id=user_id)
+        db.session.add(cart)
+        db.session.commit()
+
+    # Check if the product exists
+    product = Products.query.get(product_id)
+    if not product:
+        return jsonify({'error': 'Product not found'}), 404
+
+    # Check if the product variation exists, if provided
+    product_variation = None
+    if variation_id:
+        product_variation = ProductVariation.query.get(variation_id)
+        if not product_variation:
+            return jsonify({'error': 'Product variation not found'}), 404
+
+    # Check if the item with the same product and variation already exists in the cart
+    existing_cart_item = CartItem.query.filter_by(
+        cart_id=cart.id, 
+        product_id=product_id, 
+        product_variation_id=variation_id
+    ).first()
+
+    if existing_cart_item:
+        # Update the quantity if it already exists
+        existing_cart_item.quantity += quantity
+    else:
+        # Add a new cart item
+        new_cart_item = CartItem(
+            cart_id=cart.id,
+            product_id=product_id,
+            product_variation_id=variation_id,
+            quantity=quantity
+        )
+        db.session.add(new_cart_item)
+
+    db.session.commit()
+
+    return jsonify({'message': 'Product added to cart successfully'}), 201
+
+@marketplace_bp.route('/cart/<user_id>', methods=['GET'])
+def get_cart_items(user_id):
+    # Find the user's cart based on their user_id
+    cart = Cart.query.filter_by(user_id=user_id).first()
+    if not cart:
+        return jsonify({'message': 'Cart not found'}), 404
+
+    cart_items_details = []
+
+    # Loop through the cart items and fetch necessary details
+    for item in cart.cart_items:
+        # Product data
+        product = item.product
+        if not product:
+            continue  # Skip if product data is missing
+        
+        # Product variation data (if available)
+        product_variation = item.product_variation
+        price = product_variation.price if product_variation else product.price
+
+        # Collect product images (assuming product.images is a relationship or a method that returns a list of images)
+        images = [image.image_url for image in product.images] if product.images else []
+
+        cart_items_details.append({
+            'product_title': product.title,
+            'product_id': product.id,
+            'id' : item.id,
+            'quantity': item.quantity,
+            'price_per_item': price,
+            'total_item_price': item.total_item_price(),
+            'images': images
+        })
+
+    return jsonify({'cart_items': cart_items_details}), 200
+
+@marketplace_bp.route('/cart/update_quantity', methods=['POST'])
+def update_cart_quantity():
+    data = request.get_json()
+    item_id = data.get('itemId')
+    quantity = data.get('quantity')
+
+    if not item_id or quantity is None:
+        return jsonify({"error": "Invalid data"}), 400
+
+    # Fetch the cart item from the database
+    cart_item = CartItem.query.get(item_id)
+
+    if not cart_item:
+        return jsonify({"error": "Item not found"}), 404
+
+    if quantity <= 0:
+        # If quantity is zero or less, remove the item from the cart
+        db.session.delete(cart_item)
+        db.session.commit()
+        return jsonify({"message": "Item removed from cart"}), 200
+    else:
+        # Otherwise, update the item's quantity
+        cart_item.quantity = quantity
+        db.session.commit()
+        return jsonify({"message": "Quantity updated", "quantity": cart_item.quantity}), 200
+
+@marketplace_bp.route('/cart/remove_item', methods=['DELETE'])
+def remove_item():
+    data = request.get_json()
+    item_id = data.get('itemId')
+
+    try:
+        cart_item = CartItem.query.get(item_id)
+        if cart_item:
+            db.session.delete(cart_item)
+            db.session.commit()
+            return jsonify({"message": "Item removed successfully"}), 200
+        return jsonify({"error": "Cart item not found"}), 404
+    except Exception as e:
+        print(f"Error removing cart item: {e}")
+        return jsonify({"error": "Failed to remove cart item"}), 500
+
+@marketplace_bp.route('/create_order', methods=['POST'])
+@jwt_required()
+def create_order():
+    try:
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+
+        first_name = data.get('first_name')
+        last_name = data.get('last_name')
+        email = data.get('email')
+        phone = data.get('phone')
+        address = data.get('address') 
+        total_price = data.get('total_price')
+
+        if not all([first_name, last_name, email, phone, address]):
+            return jsonify({'error': 'Missing customer details'}), 400
+
+        # Fetch the user's cart
+        cart = Cart.query.filter_by(user_id=current_user_id).first()
+        if not cart or not cart.cart_items:
+            return jsonify({'error': 'Cart is empty'}), 400
+
+        # Create the order
+        order = Order(
+            user_id=current_user_id,
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            phone=phone,
+            address=address,
+            total_price=total_price  # Calculate total price from cart
+        )
+        db.session.add(order)
+        db.session.commit()  # Commit to get the order ID
+
+        # Copy cart items to order items
+        for cart_item in cart.cart_items:
+            order_item = OrderItem(
+                order_id=order.id,
+                product_id=cart_item.product_id,
+                quantity=cart_item.quantity 
+            )
+            db.session.add(order_item)
+
+        # Clear the cart after successful order creation
+        cart.cart_items.clear()
+        db.session.commit()
+
+        return jsonify({'message': 'Order created successfully', 'order_id': order.id}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to create order', 'details': str(e)}), 500
+
     
-    return jsonify({'product': {
-        'id': product.id, 
-        'username': product.user.last_name,
-        'contact_info': contact_info,  # Include the contact information in the response
-        'title': product.title, 
-        'description': product.description, 
-        'price': product.price,
-        'image_url':product.image_url if product.image_url else None, 
-        'category': product.category,
-        'average_rating': average_rating,  # Include the average rating in the response
-        'reviews': reviews
-    }})
+@marketplace_bp.route('/get_latest_order_id', methods=['GET'])
+@jwt_required()
+def get_latest_order_id():
+    # Extract user identity (user_id) from the JWT
+    user_id = get_jwt_identity()
+
+    # Get the latest order (the most recent one) for the logged-in user
+    latest_order = Order.query.filter_by(user_id=user_id).order_by(Order.created_at.desc()).first()
+
+    if latest_order:
+        return jsonify({'order_id': latest_order.id}), 200
+    else:
+        return jsonify({'message': 'No orders found for this user'}), 404
+
+@marketplace_bp.route('/paystack/initialize_payment', methods=['POST'])
+@jwt_required()
+def initialize_payment():
+    data = request.get_json()
+    print(data)
+    order_id = data['order_id']
+    # Fetch the order from the database
+    order =Order.query.filter_by(id=order_id).first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+
+    # Simulate payment request to Paystack
+    payload = {
+        "email": order.email,
+        "amount": int(order.total_price * 100),  # Paystack uses kobo (smallest currency unit)
+        "reference": f"PAYSTACK_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=headers)
+    if response.status_code != 200:
+        return jsonify({"error": "Failed to initialize payment with Paystack"}), 500
+
+    data = response.json()
+    return jsonify({
+        "authorization_url": data['data']['authorization_url'],
+        "reference": data['data']['reference']
+    }), 201
+
+
+@marketplace_bp.route('/paystack/verify_payment', methods=['POST'])
+@jwt_required()
+def verify_payment():
+    data = request.get_json()
+    reference = data.get('reference')
+    order_id = data.get('order_id')
+
+    # Verify the payment with Paystack
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"
+    }
+
+    response = requests.get(f"https://api.paystack.co/transaction/verify/{reference}", headers=headers)
+    if response.status_code != 200:
+        return jsonify({"error": "Failed to verify payment with Paystack"}), 500
+
+    payment_data = response.json()
+    if payment_data['data']['status'] == 'success':
+        # Update the order status
+        order = Order.query.filter_by(id=order_id).first()
+        if order:
+            order.paid = True
+            order.payment_reference = reference
+            db.session.commit()
+            return jsonify({"message": "Payment successful", "order_id": order.id}), 200
+        else:
+            return jsonify({"error": "Order not found"}), 404
+
+    return jsonify({"error": "Payment not successful"}), 400    
 
 # Route to get products created by the logged-in user
 @marketplace_bp.route('/my-products', methods=['GET'])
@@ -499,7 +864,7 @@ def search_products():
     return jsonify({'products': output})
 
 # Route to add a review and rating
-@marketplace_bp.route('/product/<int:product_id>/review', methods=['POST'])
+@marketplace_bp.route('/product/<string:product_id>/review', methods=['POST'])
 @jwt_required()
 def add_review(product_id):
     current_user = get_jwt_identity()
@@ -531,16 +896,9 @@ def add_review(product_id):
     db.session.add(new_review)
     db.session.commit()
     
-    # Return the details of the newly added review in the response
-    review_details = {
-        'id': new_review.id,
-        'text': new_review.text,
-        'rating': new_review.rating,
-        'user_id': new_review.user_id,
-        'product_id': new_review.product_id
-    }
+   
     
-    return jsonify({'message': 'Review added successfully', 'review': review_details}), 201
+    return jsonify({'message': 'Review added successfully'}), 201
 
 
 # Route to update a review
@@ -604,7 +962,7 @@ def get_reviews(product_id):
                 'text': review.text,
                 'rating': review.rating,
                 'username': user.username,
-                'userImage':  review.user.image_url if review.user.image_url else None
+                'avatar':  review.avatar if review.avatar else None
             }
             reviews.append(review_data)
 
