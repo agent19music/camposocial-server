@@ -52,17 +52,97 @@ class Users(db.Model, SerializerMixin):
             return None
         return sum([review.rating for review in self.reviews]) / len(self.reviews)
     
+    def send_friend_request(self, friend_id):
+        friendship = Friendship(user_id=self.id, friend_id=friend_id, status='pending')
+        db.session.add(friendship)
+        db.session.commit()
+
+    # Method to accept a friend request
+    def accept_friend_request(self, friend_id):
+        friendship = Friendship.query.filter_by(user_id=friend_id, friend_id=self.id, status='pending').first()
+        if friendship:
+            friendship.status = 'accepted'
+            db.session.commit()
+
+    # Method to get all friends
+    def get_friends(self):
+        friendships = Friendship.query.filter(
+            ((Friendship.user_id == self.id) | (Friendship.friend_id == self.id)) & 
+            (Friendship.status == 'accepted')
+        ).all()
+        friends = [f.friend if f.user_id == self.id else f.user for f in friendships]
+        return friends
+    
+    def get_friend_ids(self):
+        friendships = Friendship.query.filter(
+            ((Friendship.user_id == self.id) | (Friendship.friend_id == self.id)) & 
+            (Friendship.status == 'accepted')
+        ).all()
+        friend_ids = [f.friend_id if f.user_id == self.id else f.user_id for f in friendships]
+        return set(friend_ids)
+
+    # Method to calculate the number of mutual friends with each user
+    def mutual_friends_with_users(self):
+        my_friends = self.get_friend_ids()
+        users = Users.query.filter(Users.id != self.id).all()  # Get all users except the current user
+        mutual_friends_count = {}
+
+        for user in users:
+            user_friends = user.get_friend_ids()
+            mutual_count = len(my_friends & user_friends)  # Intersection of two friend sets
+            mutual_friends_count[user] = mutual_count
+
+        return mutual_friends_count
+
+    # Method to recommend mutual friends
+    def recommend_mutual_friends(self):
+        friends = self.get_friends()
+        mutual_friends = {}
+        for friend in friends:
+            for mutual_friend in friend.get_friends():
+                if mutual_friend != self and mutual_friend not in friends:
+                    mutual_friends[mutual_friend] = mutual_friends.get(mutual_friend, 0) + 1
+
+        # Sort mutual friends by the number of mutual connections
+        return sorted(mutual_friends.items(), key=lambda x: x[1], reverse=True)
+    
     @validates('username')
     def validate_username(self, key, username):
         if not username.isalnum():
             raise AssertionError('The username can only contain numbers or letters')
         return username
 
-    @validates('email')
-    def validate_email(self, key, email):
-        if not email.endswith('@student.com'):
-            raise AssertionError('Wrong email format')
-        return email
+    # @validates('email')
+    # def validate_email(self, key, email):
+    #     if not email.endswith('@student.com'):
+    #         raise AssertionError('Wrong email format')
+    #     return email
+
+class Friendship(db.Model):
+    __tablename__ = 'friendships'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    friend_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'accepted', or 'blocked'
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    # Unique constraint to prevent duplicate friendship entries
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'friend_id', name='unique_friendship'),
+    )
+
+    # Backref for accessing both directions of a friendship
+    user = db.relationship('Users', foreign_keys=[user_id], backref='friendships')
+    friend = db.relationship('Users', foreign_keys=[friend_id])
+
+
+class ChatMedia(db.Model):
+    __tablename__ = 'chat_media'
+    id = db.Column(db.Integer, primary_key=True)
+    media_url = db.Column(db.String(500), nullable=False)
+    media_type = db.Column(db.String(50), nullable=False)  # 'image', 'video', 'gif'
+    message_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 class Message(db.Model):
     __tablename__ = 'messages'
@@ -76,6 +156,7 @@ class Message(db.Model):
     reply_to_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=True)
     
     reactions = db.relationship('Reaction', backref='message', lazy=True)
+    media = db.relationship('ChatMedia', backref='message', lazy=True)
 
 class Reaction(db.Model):
     __tablename__ = 'reactions'
@@ -124,22 +205,35 @@ class Products(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     seller_id = db.Column(db.Integer, db.ForeignKey('sellers.id'))
+
+    # Other relationships
     reviews = db.relationship('Reviews', backref='product', lazy=True)
     images = db.relationship('ProductImages', backref='product', lazy=True)
     variations = db.relationship('ProductVariation', back_populates='product', lazy=True)  # Adding relationship for variations
+    
+    # Relationships for cart and order integration
+    cart_items = db.relationship('CartItem', back_populates='product', lazy=True, cascade='all, delete-orphan')
+    order_items = db.relationship('OrderItem', backref='product', lazy=True, cascade='all, delete-orphan')
 
-
-    # New relationships added for cart and order integration
-    cart_items = db.relationship('CartItem', backref='product', lazy=True, cascade='all, delete-orphan')  # Link to CartItem
-    order_items = db.relationship('OrderItem', backref='product', lazy=True, cascade='all, delete-orphan')  # Link to OrderItem
-
-    total_sales = db.Column(db.Integer, default=0)  # Track total sales for the product
-
+    total_sales = db.Column(db.Integer, default=0)  
     # Method to get the average rating of the product
     def average_rating(self):
         if len(self.reviews) == 0:
             return None
         return sum([review.rating for review in self.reviews]) / len(self.reviews)
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'contact_info': self.contact_info,
+            'brand': self.brand,
+            'price': self.price,
+            'category': self.category,
+            'created_at': self.created_at.isoformat(),  # Format datetime
+            'updated_at': self.updated_at.isoformat(),  # Format datetime
+            'seller_id': self.seller_id
+        }
 
 class ProductImages(db.Model):
     __tablename__ = 'product_images'
@@ -178,6 +272,7 @@ class Seller(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  
     products = db.relationship('Products', backref='seller', lazy=True)
 
+
     # Method to get total sales across seller's products
     def total_sales(self):
         return sum([product.total_sales for product in self.products])
@@ -207,10 +302,17 @@ class CartItem(db.Model):
     id = db.Column(db.String, primary_key=True, default=cuid)
     cart_id = db.Column(db.String, db.ForeignKey('cart.id'), nullable=False)
     product_id = db.Column(db.String, db.ForeignKey('products.id'), nullable=False)  # Links to Product table
+    product_variation_id = db.Column(db.String, db.ForeignKey('product_variations.id'), nullable=True)  # Links to ProductVariation table
     quantity = db.Column(db.Integer, default=1)  # Number of products to purchase
+
+    # Relationships
+    product = db.relationship('Products', back_populates='cart_items', lazy=True)
+    product_variation = db.relationship('ProductVariation', backref='cart_items', lazy=True)
 
     # Method to calculate the total price for this CartItem
     def total_item_price(self):
+        if self.product_variation:  # Use variation price if it exists
+            return self.quantity * self.product_variation.price
         return self.quantity * self.product.price
 
 
