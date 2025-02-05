@@ -68,15 +68,28 @@ def logout():
 
     return jsonify({"success": "Logged out successfully!"}), 200
 
+# Confirm user email
+@auth_bp.route("/confirm_email", methods=["POST"])
+def confirm_email():
+    data = request.get_json()
+    username = data.get('username')
+    email = data.get('email')
+
+    user = Users.query.filter_by(username=username, email=email).first()
+
+    if user:
+        return jsonify({"message": "Email confirmed"}), 200
+    else:
+        return jsonify({"error": "Invalid username or email"}), 404
+
 # Reset password
 @auth_bp.route("/reset_password", methods=["POST"])
 def reset_password():
     data = request.get_json()
     username = data.get('username')
-    email = data.get('email')
     new_password = data.get('new_password')
 
-    user = Users.query.filter_by(username=username, email=email).first()
+    user = Users.query.filter_by(username=username).first()
 
     if user:
         # Update the password
@@ -86,3 +99,5 @@ def reset_password():
         return jsonify({"message": "Password reset successfully"}), 200
     else:
         return jsonify({"error": "Invalid username or email"}), 404
+    
+
