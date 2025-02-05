@@ -1,4 +1,4 @@
-from models import db, Users, Events
+from models import db, Users, Events, Friendship
 from flask import request, jsonify, Blueprint
 from werkzeug.security import generate_password_hash
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -65,11 +65,44 @@ def add_users():
     
 
 @user_bp.route('/users', methods=['GET'])
+@jwt_required()
 def get_all_users():
+    # Get the current user's identity from the JWT
+    user_identity = get_jwt_identity()
+    current_user = Users.query.filter_by(id=user_identity).first()
+
+    if not current_user:
+        return jsonify(message="Current user not found"), 404
+
+    # Fetch all users
     users = Users.query.all()
     if users:
         all_users = []
         for user in users:
+            # Skip the current user in the response
+            if user.id == current_user.id:
+                continue
+
+            # Calculate mutual friends
+            mutual_friends_count = len(current_user.get_friend_ids() & user.get_friend_ids())
+
+            # Determine friendship status
+            friendship = Friendship.query.filter(
+                (Friendship.user_id == current_user.id) & (Friendship.friend_id == user.id)
+                | (Friendship.user_id == user.id) & (Friendship.friend_id == current_user.id)
+            ).first()
+
+            if friendship:
+                if friendship.status == 'accepted':
+                    friendship_status = 'friend'
+                elif friendship.user_id == current_user.id:
+                    friendship_status = 'request_sent'
+                elif friendship.friend_id == current_user.id:
+                    friendship_status = 'request_received'
+            else:
+                friendship_status = 'none'
+
+            # Add user details
             all_users.append({
                 'first_name': user.first_name,
                 'last_name': user.last_name,
@@ -77,13 +110,15 @@ def get_all_users():
                 'username': user.username,
                 'phone_no': user.phone_no,
                 'category': user.category,
-                'image_url': user.image_url if user.image_url else None,
-                'gender': user.gender
+                'photoUrl': user.avatar if user.avatar else None,
+                'id': user.id,
+                'mutual_friends': mutual_friends_count,
+                'friendship_status': friendship_status  # Add status to response
             })
+
         return jsonify({'users': all_users})
     else:
         return jsonify(message="No users found"), 404
-
 
 # Route to get a specific user by id
 @user_bp.route('/users/<int:user_id>', methods=['GET'])
@@ -208,6 +243,180 @@ def get_user_events():
         output.append(event_data)
     
     return jsonify({'user_events': output})
+
+@user_bp.route('/friends', methods=['GET'])
+@jwt_required()
+def get_friends():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    friends = Friendship.query.filter(
+        ((Friendship.user_id == user_id) | (Friendship.friend_id == user_id)),
+        Friendship.status == 'accepted'
+    ).all()
+
+    friends_list = [
+        {
+            'id': friend.friend_id if friend.user_id == user_id else friend.user_id,
+            'username': friend.friend.username if friend.user_id == user_id else friend.user.username,
+            'photoUrl': friend.friend.avatar if friend.user_id == user_id else friend.user.avatar,
+            'course': friend.friend.category if friend.user_id == user_id else friend.user.category,
+        }
+        for friend in friends
+    ]
+
+    return jsonify({'friends': friends_list}), 200
+
+@user_bp.route('/friends/block', methods=['POST'])
+@jwt_required()
+def block_user():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    data = request.get_json()
+    target_id = data.get('target_id')
+    action = data.get('action')  # 'block' or 'unblock'
+
+    if not target_id or action not in ['block', 'unblock']:
+        return jsonify({"error": "Target ID and valid action ('block' or 'unblock') are required"}), 400
+
+    friendship = Friendship.query.filter(
+        ((Friendship.user_id == user_id) & (Friendship.friend_id == target_id)) |
+        ((Friendship.user_id == target_id) & (Friendship.friend_id == user_id))
+    ).first()
+
+    if not friendship:
+        friendship = Friendship(user_id=user_id, friend_id=target_id, status='blocked' if action == 'block' else 'pending')
+        db.session.add(friendship)
+    else:
+        if action == 'block':
+            friendship.status = 'blocked'
+        elif action == 'unblock':
+            if friendship.status != 'blocked':
+                return jsonify({"error": "User is not blocked"}), 400
+            friendship.status = 'pending'  # Reset to pending or remove entirely based on your logic
+
+    db.session.commit()
+
+    return jsonify({"message": f"User {'blocked' if action == 'block' else 'unblocked'} successfully"}), 200
+
+@user_bp.route('/friends/remove', methods=['DELETE'])
+@jwt_required()
+def remove_friend():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    data = request.get_json()
+    friend_id = data.get('friend_id')
+
+    if not friend_id:
+        return jsonify({"error": "Friend ID is required"}), 400
+
+    friendship = Friendship.query.filter(
+        ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_id)) |
+        ((Friendship.user_id == friend_id) & (Friendship.friend_id == user_id)),
+        Friendship.status == 'accepted'
+    ).first()
+
+    if not friendship:
+        return jsonify({"error": "Friendship not found"}), 404
+
+    db.session.delete(friendship)
+    db.session.commit()
+
+    return jsonify({"message": "Friend removed successfully"}), 200
+
+@user_bp.route('/friends/add', methods=['POST'])
+@jwt_required()
+def add_friend():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    data = request.get_json()
+    requester_id = data.get('requester_id')
+
+    if not requester_id:
+        return jsonify({"error": "Requester ID is required"}), 400
+
+    friend_request = Friendship.query.filter_by(user_id=requester_id, friend_id=user_id, status='pending').first()
+    if not friend_request:
+        return jsonify({"error": "No pending friend request from this user"}), 404
+
+    friend_request.status = 'accepted'
+    db.session.commit()
+
+    return jsonify({"message": "Friend request accepted"}), 200
+
+@user_bp.route('/friends/send-request', methods=['POST'])
+@jwt_required()
+def send_friend_request():
+    sender_id = get_jwt_identity()  # Authenticated user's ID
+    data = request.get_json()
+    recipient_id = data.get('recipient_id')
+
+    if not recipient_id:
+        return jsonify({"error": "Recipient ID is required"}), 400
+
+    if sender_id == recipient_id:
+        return jsonify({"error": "You cannot send a friend request to yourself"}), 400
+
+    existing_request = Friendship.query.filter_by(user_id=sender_id, friend_id=recipient_id).first()
+    if existing_request:
+        return jsonify({"error": "Friend request already sent"}), 400
+
+    new_request = Friendship(user_id=sender_id, friend_id=recipient_id, status='pending')
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({"message": "Friend request sent successfully"}), 201
+
+@user_bp.route('/friends/pending', methods=['GET'])
+@jwt_required()
+def get_pending_requests():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    
+    # Fetch all friend requests where the user is the recipient and the status is 'pending'
+    pending_requests = Friendship.query.filter_by(friend_id=user_id, status='pending').all()
+
+    if not pending_requests:
+        return jsonify({"message": "No pending friend requests"}), 404
+
+    # Serialize the results
+    requests_list = [
+        {
+            'id': request.user_id,  # ID of the sender
+            'username': request.user.username,  # Username of the sender
+            'first_name': request.user.first_name,
+            'last_name': request.user.last_name,
+            'photoUrl': request.user.avatar
+        }
+        for request in pending_requests
+    ]
+
+    return jsonify({"pending_requests": requests_list}), 200
+
+@user_bp.route('/friends/reject', methods=['DELETE'])
+@jwt_required()
+def reject_friend_request():
+    user_id = get_jwt_identity()  # Authenticated user's ID
+    data = request.get_json()
+    requester_id = data.get('requester_id')
+
+    if not requester_id:
+        return jsonify({"error": "Requester ID is required"}), 400
+
+    # Find the pending friend request
+    friend_request = Friendship.query.filter_by(
+        user_id=requester_id,
+        friend_id=user_id,
+        status='pending'
+    ).first()
+
+    if not friend_request:
+        return jsonify({"error": "No pending friend request from this user"}), 404
+
+    # Delete the friend request to reject it
+    db.session.delete(friend_request)
+    db.session.commit()
+
+    return jsonify({"message": "Friend request rejected successfully"}), 200
+
+
+
+
+
 
 # @user_bp.route('/user-fun_times', methods=['GET'])
 # @jwt_required()
