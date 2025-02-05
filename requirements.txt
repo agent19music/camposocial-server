@@ -27,3 +27,12 @@ sqlalchemy==2.0.27; python_version >= '3.7'
 sqlalchemy-serializer==1.4.1
 typing-extensions==4.10.0; python_version >= '3.8'
 werkzeug==3.0.1; python_version >= '3.8'
+boto3
+flask-mail
+cuid
+python-dotenv
+sqlalchemy-serializer
+requests
+datetime
+redis
+
