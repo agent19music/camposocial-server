@@ -3,6 +3,10 @@ from flask import request, jsonify, Blueprint
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 import base64
+import requests
+import secrets
+import string
+import os
 
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -86,3 +90,255 @@ def reset_password():
         return jsonify({"message": "Password reset successfully"}), 200
     else:
         return jsonify({"error": "Invalid username or email"}), 404
+
+# Helper function to generate random username
+def generate_random_username(first_name, last_name):
+    base = f"{first_name.lower()}{last_name.lower()}"
+    random_suffix = ''.join(secrets.choice(string.digits) for _ in range(4))
+    return f"{base}{random_suffix}"
+
+# Enhanced OAuth handlers for multiple providers
+@auth_bp.route("/oauth/google/callback", methods=["POST"])
+def google_oauth_callback():
+    return handle_oauth_callback('google')
+
+@auth_bp.route("/oauth/github/callback", methods=["POST", "GET"])
+def github_oauth_callback():
+    if request.method == "GET":
+        # Handle GitHub redirect
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"error": "Authorization code not provided"}), 400
+        
+        # Exchange code for access token
+        client_id = os.environ.get('GITHUB_CLIENT_ID')
+        client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+        
+        if not client_id or not client_secret:
+            return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
+        
+        token_response = requests.post('https://github.com/login/oauth/access_token', {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'code': code
+        }, headers={'Accept': 'application/json'})
+        
+        if token_response.status_code != 200:
+            return jsonify({"error": "Failed to exchange code for token"}), 400
+            
+        token_data = token_response.json()
+        access_token = token_data.get('access_token')
+        
+        if not access_token:
+            error_description = token_data.get('error_description', 'Unknown error')
+            return jsonify({"error": f"Failed to get access token: {error_description}"}), 400
+        
+        return handle_oauth_callback('github', access_token)
+    else:
+        # Handle POST request with code from frontend
+        data = request.get_json()
+        code = data.get('code') if data else None
+        
+        if code:
+            # Exchange code for access token (same logic as GET)
+            client_id = os.environ.get('GITHUB_CLIENT_ID')
+            client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+            
+            if not client_id or not client_secret:
+                return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
+            
+            token_response = requests.post('https://github.com/login/oauth/access_token', {
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'code': code
+            }, headers={'Accept': 'application/json'})
+            
+            if token_response.status_code != 200:
+                return jsonify({"error": "Failed to exchange code for token"}), 400
+                
+            token_data = token_response.json()
+            access_token = token_data.get('access_token')
+            
+            if not access_token:
+                error_description = token_data.get('error_description', 'Unknown error')
+                return jsonify({"error": f"Failed to get access token: {error_description}"}), 400
+            
+            return handle_oauth_callback('github', access_token)
+        else:
+            return handle_oauth_callback('github')
+
+@auth_bp.route("/oauth/twitter/callback", methods=["POST"])
+def twitter_oauth_callback():
+    return handle_oauth_callback('twitter')
+
+def handle_oauth_callback(provider, token=None):
+    """Unified OAuth callback handler for all providers"""
+    try:
+        if provider == 'google':
+            data = request.get_json()
+            # Handle both direct access_token and Google OAuth response structure
+            access_token = token or data.get('access_token')
+            
+            # Check for Google OAuth response structure (from useGoogleLogin)
+            if not access_token and 'code' in data:
+                # Exchange authorization code for access token
+                client_id = os.environ.get('GOOGLE_CLIENT_ID')
+                client_secret = os.environ.get('GOOGLE_CLIENT_SECRET')
+                
+                token_response = requests.post('https://oauth2.googleapis.com/token', {
+                    'client_id': client_id,
+                    'client_secret': client_secret,
+                    'code': data.get('code'),
+                    'grant_type': 'authorization_code',
+                    'redirect_uri': data.get('redirect_uri', 'postmessage')
+                })
+                
+                if token_response.status_code == 200:
+                    token_data = token_response.json()
+                    access_token = token_data.get('access_token')
+            
+            if not access_token:
+                return jsonify({"error": "Access token is required"}), 400
+            
+            # Get user info from Google
+            response = requests.get(
+                f'https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}'
+            )
+            
+            if response.status_code != 200:
+                return jsonify({"error": "Failed to get user info from Google"}), 400
+            
+            user_info = response.json()
+            oauth_id = user_info.get('id')
+            email = user_info.get('email')
+            first_name = user_info.get('given_name', '')
+            last_name = user_info.get('family_name', '')
+            avatar = user_info.get('picture')
+            
+        elif provider == 'github':
+            data = request.get_json() if not token else None
+            access_token = token or (data.get('access_token') if data else None)
+            
+            if not access_token:
+                return jsonify({"error": "Access token is required"}), 400
+            
+            # Get user info from GitHub
+            response = requests.get(
+                'https://api.github.com/user',
+                headers={'Authorization': f'token {access_token}'}
+            )
+            
+            if response.status_code != 200:
+                return jsonify({"error": "Failed to get user info from GitHub"}), 400
+            
+            user_info = response.json()
+            oauth_id = str(user_info.get('id'))
+            email = user_info.get('email')
+            name_parts = (user_info.get('name') or '').split(' ', 1)
+            first_name = name_parts[0] if name_parts else user_info.get('login', '')
+            last_name = name_parts[1] if len(name_parts) > 1 else ''
+            avatar = user_info.get('avatar_url')
+            
+            # If email is null, get it from the emails endpoint
+            if not email:
+                email_response = requests.get(
+                    'https://api.github.com/user/emails',
+                    headers={'Authorization': f'token {access_token}'}
+                )
+                if email_response.status_code == 200:
+                    emails = email_response.json()
+                    primary_email = next((e['email'] for e in emails if e['primary']), None)
+                    email = primary_email or (emails[0]['email'] if emails else None)
+            
+        elif provider == 'twitter':
+            # Twitter OAuth 2.0 implementation would go here
+            return jsonify({"error": "Twitter OAuth not fully implemented yet"}), 501
+        
+        if not email:
+            return jsonify({"error": f"Email not provided by {provider}"}), 400
+        
+        # Check if user exists by OAuth ID first, then by email
+        existing_user = Users.query.filter_by(oauth_provider=provider, oauth_id=oauth_id).first()
+        if not existing_user:
+            existing_user = Users.query.filter_by(email=email).first()
+        
+        if existing_user:
+            # Update OAuth info if it's missing
+            if not existing_user.oauth_provider:
+                existing_user.oauth_provider = provider
+                existing_user.oauth_id = oauth_id
+                existing_user.is_oauth_user = True
+                db.session.commit()
+            
+            # User exists, log them in
+            access_token = create_access_token(identity=existing_user.id)
+            return jsonify({
+                "access_token": access_token,
+                "is_profile_complete": existing_user.profile_completed
+            }), 200
+        else:
+            # Create new user
+            username = generate_random_username(first_name or 'user', last_name or 'name')
+            
+            # Ensure username is unique
+            while Users.query.filter_by(username=username).first():
+                username = generate_random_username(first_name or 'user', last_name or 'name')
+            
+            new_user = Users(
+                username=username,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                avatar=avatar,
+                display_name=f"{first_name} {last_name}".strip() or username,
+                oauth_provider=provider,
+                oauth_id=oauth_id,
+                is_oauth_user=True,
+                profile_completed=False  # Always require profile completion for new OAuth users
+            )
+            
+            db.session.add(new_user)
+            db.session.commit()
+            
+            access_token = create_access_token(identity=new_user.id)
+            
+            return jsonify({
+                "access_token": access_token,
+                "is_profile_complete": False
+            }), 201
+            
+    except Exception as e:
+        return jsonify({"error": "OAuth authentication failed", "details": str(e)}), 500
+
+# Complete profile after OAuth signup
+@auth_bp.route("/user/complete-profile", methods=["POST"])
+@jwt_required()
+def complete_profile():
+    current_user_id = get_jwt_identity()
+    user = Users.query.get(current_user_id)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    data = request.get_json()
+    
+    # Update user profile
+    if 'first_name' in data and data['first_name']:
+        user.first_name = data['first_name']
+    if 'last_name' in data and data['last_name']:
+        user.last_name = data['last_name']
+    if 'category' in data and data['category']:
+        user.category = data['category']
+    if 'phone_no' in data:
+        user.phone_no = data['phone_no']
+    if 'display_name' in data and data['display_name']:
+        user.display_name = data['display_name']
+    if 'bio' in data:
+        user.bio = data['bio']
+    
+    # Mark profile as completed
+    user.profile_completed = True
+    
+    db.session.commit()
+    
+    return jsonify({"message": "Profile completed successfully"}), 200

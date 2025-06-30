@@ -15,19 +15,25 @@ db = SQLAlchemy(metadata=metadata)
 class Users(db.Model, SerializerMixin):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
-    first_name = db.Column(db.String(255), nullable=False)
-    last_name = db.Column(db.String(255), nullable=False)
+    first_name = db.Column(db.String(255), nullable=True)  # Made nullable for OAuth
+    last_name = db.Column(db.String(255), nullable=True)   # Made nullable for OAuth
     username = db.Column(db.String(100), unique=True, nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
+    password = db.Column(db.String(255), nullable=True)     # Made nullable for OAuth-only users
     phone_no = db.Column(db.String(20), nullable=True)
-    category = db.Column(db.String(100), nullable=False)
+    category = db.Column(db.String(100), nullable=True)     # Made nullable for OAuth completion
     avatar = db.Column(db.String(255))  # Store the URL of the image
     display_name = db.Column(db.String(100))
     bio = db.Column(db.Text)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    public_key = db.Column(db.Text, nullable=True) 
+    public_key = db.Column(db.Text, nullable=True)
+    
+    # OAuth-specific fields
+    oauth_provider = db.Column(db.String(50), nullable=True)  # 'google', 'github', 'twitter'
+    oauth_id = db.Column(db.String(255), nullable=True)       # Provider-specific user ID
+    is_oauth_user = db.Column(db.Boolean, default=False)      # Flag for OAuth users
+    profile_completed = db.Column(db.Boolean, default=False)  # Track profile completion 
     
     events = db.relationship('Events', backref='user', lazy=True)
     comments_on_events = db.relationship('Comment_events', backref='user', lazy=True)
@@ -60,8 +66,9 @@ class Users(db.Model, SerializerMixin):
 
     @validates('email')
     def validate_email(self, key, email):
-        if not email.endswith('@student.com'):
-            raise AssertionError('Wrong email format')
+        # For OAuth users, we allow any valid email format
+        if '@' not in email or '.' not in email.split('@')[1]:
+            raise AssertionError('Invalid email format')
         return email
 
 class Message(db.Model):
@@ -124,22 +131,35 @@ class Products(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     seller_id = db.Column(db.Integer, db.ForeignKey('sellers.id'))
+
+    # Other relationships
     reviews = db.relationship('Reviews', backref='product', lazy=True)
     images = db.relationship('ProductImages', backref='product', lazy=True)
     variations = db.relationship('ProductVariation', back_populates='product', lazy=True)  # Adding relationship for variations
+    
+    # Relationships for cart and order integration
+    cart_items = db.relationship('CartItem', back_populates='product', lazy=True, cascade='all, delete-orphan')
+    order_items = db.relationship('OrderItem', backref='product', lazy=True, cascade='all, delete-orphan')
 
-
-    # New relationships added for cart and order integration
-    cart_items = db.relationship('CartItem', backref='product', lazy=True, cascade='all, delete-orphan')  # Link to CartItem
-    order_items = db.relationship('OrderItem', backref='product', lazy=True, cascade='all, delete-orphan')  # Link to OrderItem
-
-    total_sales = db.Column(db.Integer, default=0)  # Track total sales for the product
-
+    total_sales = db.Column(db.Integer, default=0)  
     # Method to get the average rating of the product
     def average_rating(self):
         if len(self.reviews) == 0:
             return None
         return sum([review.rating for review in self.reviews]) / len(self.reviews)
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'contact_info': self.contact_info,
+            'brand': self.brand,
+            'price': self.price,
+            'category': self.category,
+            'created_at': self.created_at.isoformat(),  # Format datetime
+            'updated_at': self.updated_at.isoformat(),  # Format datetime
+            'seller_id': self.seller_id
+        }
 
 class ProductImages(db.Model):
     __tablename__ = 'product_images'
@@ -178,6 +198,7 @@ class Seller(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  
     products = db.relationship('Products', backref='seller', lazy=True)
 
+
     # Method to get total sales across seller's products
     def total_sales(self):
         return sum([product.total_sales for product in self.products])
@@ -207,10 +228,17 @@ class CartItem(db.Model):
     id = db.Column(db.String, primary_key=True, default=cuid)
     cart_id = db.Column(db.String, db.ForeignKey('cart.id'), nullable=False)
     product_id = db.Column(db.String, db.ForeignKey('products.id'), nullable=False)  # Links to Product table
+    product_variation_id = db.Column(db.String, db.ForeignKey('product_variations.id'), nullable=True)  # Links to ProductVariation table
     quantity = db.Column(db.Integer, default=1)  # Number of products to purchase
+
+    # Relationships
+    product = db.relationship('Products', back_populates='cart_items', lazy=True)
+    product_variation = db.relationship('ProductVariation', backref='cart_items', lazy=True)
 
     # Method to calculate the total price for this CartItem
     def total_item_price(self):
+        if self.product_variation:  # Use variation price if it exists
+            return self.quantity * self.product_variation.price
         return self.quantity * self.product.price
 
 

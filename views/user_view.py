@@ -26,43 +26,7 @@ s3_client = boto3.client(
     aws_secret_access_key=R2_SECRET_ACCESS_KEY
 )    
 
-@user_bp.route("/signup", methods=["POST"])
-def add_users():
-    try:
-        data = request.get_json()
-
-        required_fields = ["username", "email", "password", "first_name", "last_name", "category"]
-        for field in required_fields:
-            if field not in data:
-                return jsonify({"message": f"{field} is required"}), 400
-
-        existing_user = Users.query.filter(or_(Users.username == data["username"], Users.email == data["email"])).first()
-        if existing_user:
-            return jsonify({"message": "Username or email already exists"}), 400
-
-        hashed_password = generate_password_hash(data["password"])
-
-        new_user = Users(
-            first_name=data.get("first_name", ""),
-            last_name=data.get("last_name", ""),
-            username=data['username'],
-            email=data["email"],
-            password=hashed_password,
-            category=data.get("category"),
-           
-        )
-
-        db.session.add(new_user)
-        db.session.commit()
-
-        return jsonify({"message": "User added successfully"}), 201
-    except AssertionError as e:
-        return jsonify({"message": str(e)}), 400
-    except Exception as e:
-        print(str(e))
-        db.session.rollback()
-        return jsonify({"message": "Internal Server Error"}), 500
-    
+# Manual signup removed - OAuth only authentication
 
 @user_bp.route('/users', methods=['GET'])
 def get_all_users():
