@@ -174,16 +174,29 @@ def twitter_oauth_callback():
 def handle_oauth_callback(provider, token=None):
     """Unified OAuth callback handler for all providers"""
     try:
+        print(f"[DEBUG] Starting OAuth callback for provider: {provider}")
+        
         if provider == 'google':
             data = request.get_json()
+            print(f"[DEBUG] Received data: {data}")
+            
+            if not data:
+                print("[ERROR] No data received in request")
+                return jsonify({"error": "No data provided"}), 400
+            
             # Handle both direct access_token and Google OAuth response structure
             access_token = token or data.get('access_token')
             
             # Check for Google OAuth response structure (from useGoogleLogin)
-            if not access_token and 'code' in data:
+            if not access_token and data and 'code' in data:
+                print("[DEBUG] Exchanging authorization code for access token")
                 # Exchange authorization code for access token
                 client_id = os.environ.get('GOOGLE_CLIENT_ID')
                 client_secret = os.environ.get('GOOGLE_CLIENT_SECRET')
+                
+                if not client_id or not client_secret:
+                    print("[ERROR] Google OAuth credentials not configured")
+                    return jsonify({"error": "Google OAuth credentials not configured"}), 500
                 
                 token_response = requests.post('https://oauth2.googleapis.com/token', {
                     'client_id': client_id,
@@ -193,27 +206,86 @@ def handle_oauth_callback(provider, token=None):
                     'redirect_uri': data.get('redirect_uri', 'postmessage')
                 })
                 
+                print(f"[DEBUG] Token response status: {token_response.status_code}")
+                print(f"[DEBUG] Token response: {token_response.text}")
+                
                 if token_response.status_code == 200:
                     token_data = token_response.json()
                     access_token = token_data.get('access_token')
+                else:
+                    print(f"[ERROR] Failed to exchange code for token: {token_response.text}")
+                    return jsonify({"error": f"Failed to exchange code for token: {token_response.text}"}), 400
             
             if not access_token:
+                print("[ERROR] No access token found")
                 return jsonify({"error": "Access token is required"}), 400
             
             # Get user info from Google
+            print(f"[DEBUG] Getting user info with access token: {access_token[:20] if len(access_token) > 20 else access_token}...")
+            
+            # Use the Google People API which is more reliable
             response = requests.get(
-                f'https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}'
+                'https://people.googleapis.com/v1/people/me',
+                headers={'Authorization': f'Bearer {access_token}'},
+                params={'personFields': 'names,emailAddresses,photos'}
             )
             
+            print(f"[DEBUG] People API response status: {response.status_code}")
+            print(f"[DEBUG] People API response: {response.text}")
+            
+            # If People API fails, try the OAuth2 userinfo endpoint
             if response.status_code != 200:
-                return jsonify({"error": "Failed to get user info from Google"}), 400
+                print("[DEBUG] Trying OAuth2 userinfo endpoint...")
+                response = requests.get(
+                    'https://www.googleapis.com/oauth2/v2/userinfo',
+                    headers={'Authorization': f'Bearer {access_token}'}
+                )
+                print(f"[DEBUG] OAuth2 response status: {response.status_code}")
+                print(f"[DEBUG] OAuth2 response: {response.text}")
+                
+                # If that also fails, try the older endpoint
+                if response.status_code != 200:
+                    print("[DEBUG] Trying older Google API endpoint...")
+                    response = requests.get(
+                        f'https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}'
+                    )
+                    print(f"[DEBUG] Older endpoint response status: {response.status_code}")
+                    print(f"[DEBUG] Older endpoint response: {response.text}")
+            
+            if response.status_code != 200:
+                error_msg = f"Failed to get user info from Google. Status: {response.status_code}, Response: {response.text}"
+                print(f"[ERROR] {error_msg}")
+                return jsonify({"error": error_msg}), 400
             
             user_info = response.json()
-            oauth_id = user_info.get('id')
-            email = user_info.get('email')
-            first_name = user_info.get('given_name', '')
-            last_name = user_info.get('family_name', '')
-            avatar = user_info.get('picture')
+            print(f"[DEBUG] Parsed user info: {user_info}")
+            
+            # Handle different API response formats
+            if 'emailAddresses' in user_info:  # People API format
+                emails = user_info.get('emailAddresses', [])
+                primary_email = next((e['value'] for e in emails if e.get('metadata', {}).get('primary')), None)
+                email = primary_email or (emails[0]['value'] if emails else None)
+                
+                names = user_info.get('names', [])
+                primary_name = next((n for n in names if n.get('metadata', {}).get('primary')), {})
+                first_name = primary_name.get('givenName', '')
+                last_name = primary_name.get('familyName', '')
+                
+                photos = user_info.get('photos', [])
+                primary_photo = next((p for p in photos if p.get('metadata', {}).get('primary')), {})
+                avatar = primary_photo.get('url')
+                
+                # For People API, we need to get the ID from a different source or use email as identifier
+                oauth_id = email  # Using email as ID since People API doesn't directly provide numeric ID
+                
+            else:  # OAuth2 userinfo API format
+                oauth_id = user_info.get('id')
+                email = user_info.get('email')
+                first_name = user_info.get('given_name', '')
+                last_name = user_info.get('family_name', '')
+                avatar = user_info.get('picture')
+            
+            print(f"[DEBUG] User info: email={email}, oauth_id={oauth_id}, name={first_name} {last_name}")
             
         elif provider == 'github':
             data = request.get_json() if not token else None
@@ -308,6 +380,9 @@ def handle_oauth_callback(provider, token=None):
             }), 201
             
     except Exception as e:
+        print(f"[ERROR] OAuth authentication failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "OAuth authentication failed", "details": str(e)}), 500
 
 # Complete profile after OAuth signup
