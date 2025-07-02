@@ -1,9 +1,10 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
-from models import db
+from flask_socketio import SocketIO, emit, join_room, leave_room
+from models import db, TokenBlocklist
 from datetime import timedelta
 import os
 from views import *
@@ -32,6 +33,15 @@ def create_app():
          allow_headers=['Content-Type', 'Authorization'],
          supports_credentials=True)
     
+    # Initialize SocketIO with proper configuration
+    socketio = SocketIO(
+        app, 
+        cors_allowed_origins=os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+        async_mode='threading',  # Use threading mode for better compatibility
+        logger=True,  # Enable logging for debugging
+        engineio_logger=True  # Enable engine.io logging
+    )
+    
     # JWT Setup
     jwt = JWTManager(app)
 
@@ -48,15 +58,72 @@ def create_app():
     app.register_blueprint(event_bp, url_prefix='/camposocial/api')
     app.register_blueprint(auth_bp, url_prefix='/camposocial/api')
     app.register_blueprint(yap_bp, url_prefix='/camposocial/api')
+    app.register_blueprint(friends_bp, url_prefix='/camposocial/api')
 
     # Define the root route
     @app.route('/camposocial/api/')
     def index():
         return jsonify({'message': 'Welcome to CampoSocial API'})
 
-    return app
+    # Socket.IO event handlers
+    @socketio.on('connect')
+    def handle_connect(auth=None):
+        try:
+            print(f'Client attempting to connect: {request.sid}')
+            # Basic connection allowed - authentication will be verified per-event
+            print(f'Client connected: {request.sid}')
+            emit('connected', {'status': 'success', 'sid': request.sid})
+            return True
+        except Exception as e:
+            print(f'Connection error: {str(e)}')
+            emit('error', {'message': 'Connection failed'})
+            return False
+        
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        print(f'Client disconnected: {request.sid}')
+        
+    @socketio.on('join_conversation')
+    def handle_join_conversation(data):
+        try:
+            if not data:
+                emit('error', {'message': 'No data provided'})
+                return
+                
+            conversation_id = data.get('conversationId')
+            auth_token = data.get('auth_token')
+            
+            if not auth_token:
+                emit('error', {'message': 'Authentication required'})
+                return
+                
+            if conversation_id:
+                join_room(conversation_id)
+                print(f'Client {request.sid} joined conversation {conversation_id}')
+                emit('joined_conversation', {'conversationId': conversation_id})
+            else:
+                emit('error', {'message': 'No conversation ID provided'})
+        except Exception as e:
+            print(f'Error joining conversation: {str(e)}')
+            emit('error', {'message': 'Failed to join conversation'})
+            
+    @socketio.on('leave_conversation')
+    def handle_leave_conversation(data):
+        try:
+            conversation_id = data.get('conversationId')
+            if conversation_id:
+                leave_room(conversation_id)
+                print(f'Client {request.sid} left conversation {conversation_id}')
+                emit('left_conversation', {'conversationId': conversation_id})
+        except Exception as e:
+            print(f'Error leaving conversation: {str(e)}')
+            emit('error', {'message': 'Failed to leave conversation'})
+
+    return app, socketio
+
+# Create app instance for Flask CLI
+app, socketio = create_app()
 
 if __name__ == '__main__':
-    # Create the app and run it
-    app = create_app()
-    app.run(debug=True)
+    # Run the app
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)

@@ -80,8 +80,11 @@ class Message(db.Model):
     
     # Foreign Keys
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    conversation_id = db.Column(db.String, db.ForeignKey('conversations.id'), nullable=False)
     reply_to_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=True)
     
+    # Relationships
+    conversation = db.relationship('Conversation', backref='messages')
     reactions = db.relationship('Reaction', backref='message', lazy=True)
 
 class Reaction(db.Model):
@@ -297,7 +300,7 @@ class Yap(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
     # Retweet reference
-    original_yap_id = db.Column(db.Integer, db.ForeignKey('yaps.id'))
+    original_yap_id = db.Column(db.String, db.ForeignKey('yaps.id'))
     retweets = db.relationship('Yap', backref=db.backref('original_yap', remote_side=[id]), lazy=True)
     
     # Relationships
@@ -453,7 +456,7 @@ class Like(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     
-    yap_id = db.Column(db.Integer, db.ForeignKey('yaps.id'), nullable=True)
+    yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=True)
     reply_id = db.Column(db.Integer, db.ForeignKey('replies.id'), nullable=True)
 
     def __repr__(self):
@@ -493,6 +496,61 @@ class Wishlists(db.Model, SerializerMixin):
 
     user = db.relationship('Users', backref='wishlists_items', lazy=True)
     product = db.relationship('Products', backref='wishlists_items', lazy=True)
+
+    def __repr__(self):
+        return f"<Wishlist {self.id}>"
+
+
+class Friendship(db.Model):
+    __tablename__ = 'friendships'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    requester_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    addressee_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending')  # 'pending', 'accepted', 'declined', 'blocked'
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships to Users
+    requester = db.relationship('Users', foreign_keys=[requester_id], backref='sent_friend_requests')
+    addressee = db.relationship('Users', foreign_keys=[addressee_id], backref='received_friend_requests')
+    
+    # Ensure unique friendship requests
+    __table_args__ = (
+        db.UniqueConstraint('requester_id', 'addressee_id', name='unique_friendship_request'),
+        db.CheckConstraint('requester_id != addressee_id', name='no_self_friendship'),
+    )
+    
+    def __repr__(self):
+        return f"<Friendship {self.requester_id} -> {self.addressee_id}: {self.status}>"
+
+
+class Conversation(db.Model):
+    __tablename__ = 'conversations'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    user1_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user2_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user1 = db.relationship('Users', foreign_keys=[user1_id])
+    user2 = db.relationship('Users', foreign_keys=[user2_id])
+    
+    # Ensure unique conversations between two users
+    __table_args__ = (
+        db.UniqueConstraint('user1_id', 'user2_id', name='unique_conversation'),
+        db.CheckConstraint('user1_id != user2_id', name='no_self_conversation'),
+    )
+    
+    def __repr__(self):
+        return f"<Conversation {self.user1_id} <-> {self.user2_id}>"
+    
+    def get_other_user(self, current_user_id):
+        """Get the other user in the conversation"""
+        return self.user2 if self.user1_id == current_user_id else self.user1
+
 
 class TokenBlocklist(db.Model):
     id = db.Column(db.Integer, primary_key=True)

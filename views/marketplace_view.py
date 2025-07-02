@@ -321,7 +321,8 @@ def get_cart_items(user_id):
     # Find the user's cart based on their user_id
     cart = Cart.query.filter_by(user_id=user_id).first()
     if not cart:
-        return jsonify({'message': 'Cart not found'}), 404
+        # Return empty cart instead of 404 error
+        return jsonify({'cart_items': []}), 200
 
     cart_items_details = []
 
@@ -533,7 +534,7 @@ def get_my_products():
                 'text': review.text,
                 'rating': review.rating,
                 'username': review.user.username,  # Get the username of the user who posted the review
-                'user_image_url': review.user.image_url if review.user.image_url else None  # Get the image data of the user who posted the review
+                'user_image_url': review.user.avatar if review.user.avatar else None  # Get the image data of the user who posted the review
             }
             reviews.append(review_data)
         
@@ -762,7 +763,7 @@ def get_products_by_category(category):
             'text': review.text,
             'rating': review.rating,
             'username': review.user.username,
-            'user_image_url':  review.user.image_url if review.user.image_url else None
+            'user_image_url':  review.user.avatar if review.user.avatar else None
         } for review in product.reviews]
 
         # Determine the contact information for the product
@@ -823,7 +824,7 @@ def search_products():
             'text': review.text,
             'rating': review.rating,
             'username': review.user.username,
-            'user_image_url': review.user.image_url if review.user.image_url else None
+                            'user_image_url': review.user.avatar if review.user.avatar else None
         } for review in product.reviews]
 
         # Determine the contact information for the product
@@ -947,7 +948,7 @@ def get_reviews(product_id):
                 'text': review.text,
                 'rating': review.rating,
                 'username': user.username,
-                'avatar':  review.avatar if review.avatar else None
+                'avatar':  user.avatar if user.avatar else None
             }
             reviews.append(review_data)
 

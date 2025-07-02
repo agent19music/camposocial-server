@@ -32,3 +32,4 @@ cuid
 dotenv
 requests
 python-dotenv
+flask-socketio

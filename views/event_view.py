@@ -45,7 +45,7 @@ def get_events():
         'comments': [{
             'id': comment.id,
             'text': comment.text,
-            'image': comment.user.image_url if comment.user.image_url else None,
+            'image': comment.user.avatar if comment.user.avatar else None,
             'username': comment.user.username,
             'dateCreated': comment.created_at
         } for comment in event.comments]
@@ -72,7 +72,7 @@ def get_specific_event(event_id):
         'comments': [{
             'id': comment.id,
             'text': comment.text, 
-            'image': comment.user.image_url if comment.user.image_url else None,
+            'image': comment.user.avatar if comment.user.avatar else None,
             'username': comment.user.username, 
             'dateCreated': comment.created_at 
         } for comment in event.comments]
@@ -312,7 +312,7 @@ def get_events_by_category(category):
         'comments': [{
             'id': comment.id,
             'text': comment.text,
-            'image': comment.user.image_url if comment.user.image_url else None,
+            'image': comment.user.avatar if comment.user.avatar else None,
             'username': comment.user.username,
             'dateCreated': comment.created_at
         } for comment in event.comments]

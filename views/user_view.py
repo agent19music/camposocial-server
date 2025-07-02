@@ -41,8 +41,7 @@ def get_all_users():
                 'username': user.username,
                 'phone_no': user.phone_no,
                 'category': user.category,
-                'image_url': user.image_url if user.image_url else None,
-                'gender': user.gender
+                'image_url': user.avatar if user.avatar else None,
             })
         return jsonify({'users': all_users})
     else:
@@ -61,7 +60,7 @@ def get_user(user_id):
             'username': user.username,
             'phone_no': user.phone_no,
             'category': user.category,
-            'image_url': user.image_url if user.image_url else None,
+            'image_url': user.avatar if user.avatar else None,
             'gender': user.gender
         }})
     else:
@@ -83,7 +82,7 @@ def get_profile():
             'email': user.email,
             'phone_no': user.phone_no,
             'category': user.category,
-            'image_url': user.image_url if user.image_url else None,
+            'image_url': user.avatar if user.avatar else None,
             'gender': user.gender
         }
         return jsonify(user_data), 200
@@ -121,7 +120,7 @@ def update_profile():
 
             # You can store the image key or a full URL in the user's profile
             r2_image_url = f"{IMAGE_PREFIX}/{image_key}"
-            user.image_url = r2_image_url
+            user.avatar = r2_image_url
         except Exception as e:
             return jsonify({'error': f"Failed to upload image: {str(e)}"}), 500
 
