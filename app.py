@@ -11,6 +11,9 @@ from views import *
 import boto3
 import bcrypt
 from dotenv import load_dotenv
+from api_docs import api_bp as api_doc_bp
+from api_explorer import api_explorer_bp
+from welcome import welcome_bp
 
 load_dotenv()
 
@@ -59,11 +62,37 @@ def create_app():
     app.register_blueprint(auth_bp, url_prefix='/camposocial/api')
     app.register_blueprint(yap_bp, url_prefix='/camposocial/api')
     app.register_blueprint(friends_bp, url_prefix='/camposocial/api')
+    
+    # Register API documentation blueprint
+    app.register_blueprint(api_doc_bp)
+    app.register_blueprint(api_explorer_bp)
+    
+    # Register welcome blueprint (handles root route)
+    app.register_blueprint(welcome_bp)
 
-    # Define the root route
+    # Define the root route with welcome message and documentation links
     @app.route('/camposocial/api/')
     def index():
-        return jsonify({'message': 'Welcome to CampoSocial API'})
+        """Welcome endpoint with API documentation links"""
+        return jsonify({
+            'message': 'Welcome to CampoSocial API',
+            'version': '1.0',
+            'documentation': {
+                'swagger_ui': '/docs',
+                'api_explorer': '/api-explorer',
+                'endpoints': {
+                    'authentication': '/camposocial/api/login',
+                    'users': '/camposocial/api/users',
+                    'events': '/camposocial/api/events',
+                    'marketplace': '/camposocial/api/products',
+                    'yaps': '/camposocial/api/yaps',
+                    'friends': '/camposocial/api/friends'
+                }
+            },
+            'status': 'active',
+            'contact': 'support@camposocial.com'
+        })
+    
 
     # Socket.IO event handlers
     @socketio.on('connect')
