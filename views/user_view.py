@@ -1,6 +1,7 @@
 from models import db, Users, Events
 from flask import request, jsonify, Blueprint
 from werkzeug.security import generate_password_hash
+from werkzeug.utils import secure_filename
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import or_, func
 import base64
@@ -56,12 +57,13 @@ def get_user(user_id):
         return jsonify({'user': {
             'first_name': user.first_name,
             'last_name': user.last_name,
-            'email': user.email,
+            'email': user.email,    
             'username': user.username,
             'phone_no': user.phone_no,
             'category': user.category,
             'image_url': user.avatar if user.avatar else None,
-            'gender': user.gender
+            'display_name': user.display_name,
+            'bio': user.bio
         }})
     else:
         return jsonify(message="User not found"), 404
@@ -83,7 +85,8 @@ def get_profile():
             'phone_no': user.phone_no,
             'category': user.category,
             'image_url': user.avatar if user.avatar else None,
-            'gender': user.gender
+            'display_name': user.display_name,
+            'bio': user.bio
         }
         return jsonify(user_data), 200
     else:
@@ -99,32 +102,44 @@ def update_profile():
         return jsonify(message="User not found"), 404
     
     data = request.form  # Use request.form for handling form data
+
+    # Username change with validation and uniqueness check
+    new_username = data.get('username')
+    if new_username and new_username != user.username:
+        uname = new_username.strip()
+        if len(uname) < 3 or len(uname) > 20:
+            return jsonify({'error': 'Username must be between 3 and 20 characters'}), 400
+        import re
+        if not re.match(r'^[A-Za-z0-9_]+$', uname):
+            return jsonify({'error': 'Username can only contain letters, numbers, and underscores'}), 400
+        from sqlalchemy import func
+        existing = Users.query.filter(func.lower(Users.username) == uname.lower()).first()
+        if existing and existing.id != user.id:
+            return jsonify({'error': 'Username already taken'}), 409
+        user.username = uname
+
     user.first_name = data.get('first_name', user.first_name)
+    user.display_name = data.get('display_name', user.display_name)
     user.last_name = data.get('last_name', user.last_name)
-    user.username = data.get('username', user.username)
+    user.bio = data.get('bio', user.bio)
     user.email = data.get('email', user.email)
     user.phone_no = data.get('phone_no', user.phone_no)
     user.category = data.get('category', user.category)
-    user.gender = data.get('gender', user.gender)
+
 
     # Handle image upload to R2
     image_file = request.files.get('profile_image')  # Expecting a file input with name 'profile_image'
     
-    if image_file:
-        # Create an image key (filename) for the uploaded object
-        image_key = f'profile_images/{current_user}/{image_file.filename}'
+    if image_file and image_file.filename:
+        image_key = f'profile_images/{current_user}/{secure_filename(image_file.filename)}'
         
         try:
-            # Upload image to R2 bucket
             s3_client.upload_fileobj(image_file, R2_BUCKET_NAME, image_key)
-
-            # You can store the image key or a full URL in the user's profile
             r2_image_url = f"{IMAGE_PREFIX}/{image_key}"
             user.avatar = r2_image_url
         except Exception as e:
             return jsonify({'error': f"Failed to upload image: {str(e)}"}), 500
 
-    # Commit changes to the database
     db.session.commit()
 
     return jsonify({'message': 'Profile updated successfully'})

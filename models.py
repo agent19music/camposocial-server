@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy_serializer import SerializerMixin
 from sqlalchemy.orm import validates
 from cuid import cuid
+import re
 
 # Define metadata with a naming convention for foreign keys
 metadata = MetaData(naming_convention={
@@ -60,8 +61,8 @@ class Users(db.Model, SerializerMixin):
     
     @validates('username')
     def validate_username(self, key, username):
-        if not username.isalnum():
-            raise AssertionError('The username can only contain numbers or letters')
+        if not re.match(r'^[A-Za-z0-9_]+$', username or ''):
+            raise AssertionError('The username can only contain letters, numbers, or underscores')
         return username
 
     @validates('email')

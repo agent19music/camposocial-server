@@ -2,6 +2,7 @@ from models import db, Users, TokenBlocklist
 from flask import request, jsonify, Blueprint
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
+from sqlalchemy import func
 import base64
 import requests
 import secrets
@@ -11,6 +12,23 @@ import os
 auth_bp = Blueprint('auth_bp', __name__)
 
 # Routes
+
+@auth_bp.route('/check-username', methods=['POST'])
+def check_username():
+    try:
+        data = request.get_json() or {}
+        username = (data.get('username') or '').strip()
+        if not username:
+            return jsonify({"error": "Username is required"}), 400
+        if len(username) < 3 or len(username) > 20:
+            return jsonify({"available": False}), 200
+        import re
+        if not re.match(r'^[A-Za-z0-9_]+$', username):
+            return jsonify({"available": False}), 200
+        exists = Users.query.filter(func.lower(Users.username) == username.lower()).first()
+        return jsonify({"available": exists is None}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # Login user
 @auth_bp.route("/login", methods=["POST"])
@@ -362,7 +380,7 @@ def handle_oauth_callback(provider, token=None):
                 first_name=first_name,
                 last_name=last_name,
                 avatar=avatar,
-                display_name=f"{first_name} {last_name}".strip() or username,
+                display_name=None,  # Force user to choose custom display name
                 oauth_provider=provider,
                 oauth_id=oauth_id,
                 is_oauth_user=True,
@@ -395,7 +413,27 @@ def complete_profile():
     if not user:
         return jsonify({"error": "User not found"}), 404
     
-    data = request.get_json()
+    data = request.get_json() or {}
+
+    # If user hasn't completed profile yet, enforce required fields
+    if not user.profile_completed:
+        if not data.get('username') or not data.get('display_name'):
+            return jsonify({"error": "username and display_name are required"}), 400
+
+    # Username handling
+    new_username = data.get('username')
+    if new_username and new_username != user.username:
+        uname = new_username.strip()
+        if len(uname) < 3 or len(uname) > 20:
+            return jsonify({"error": "Username must be between 3 and 20 characters"}), 400
+        # Allow letters, numbers, underscores
+        import re
+        if not re.match(r'^[A-Za-z0-9_]+$', uname):
+            return jsonify({"error": "Username can only contain letters, numbers, and underscores"}), 400
+        existing = Users.query.filter(func.lower(Users.username) == uname.lower()).first()
+        if existing and existing.id != user.id:
+            return jsonify({"error": "Username already taken"}), 409
+        user.username = uname
     
     # Update user profile
     if 'first_name' in data and data['first_name']:

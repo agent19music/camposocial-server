@@ -422,14 +422,15 @@ def retweet_yap(yap_id):
         if not original_yap:
             return jsonify({'error': 'Yap not found'}), 404
             
-        # Check if user already retweeted this yap
+        # Check if user already retweeted this yap (both pure and quote retweets)
         existing_retweet = Yap.query.filter_by(user_id=user_id, original_yap_id=yap_id).first()
         if existing_retweet:
             return jsonify({'error': 'You have already retweeted this yap'}), 400
             
-        # Create retweet
-        retweet_content = data.get('content', '')  # Optional comment on retweet
+        # Get retweet content - empty string means pure retweet
+        retweet_content = data.get('content', '').strip()
         
+        # Create retweet - for pure retweets (empty content), we'll handle display differently
         new_retweet = Yap(
             content=retweet_content,
             user_id=user_id,
@@ -454,7 +455,8 @@ def retweet_yap(yap_id):
         return jsonify({
             'message': 'Yap retweeted successfully',
             'retweet_id': new_retweet.id,
-            'retweets_count': len(original_yap.retweets)
+            'retweets_count': len(original_yap.retweets),
+            'is_quote': bool(retweet_content)  # Indicate if it's a quote tweet
         }), 201
         
     except Exception as e:

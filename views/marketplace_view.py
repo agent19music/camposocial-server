@@ -29,6 +29,29 @@ s3_client = boto3.client(
     aws_secret_access_key=R2_SECRET_ACCESS_KEY
 )   
 
+@marketplace_bp.route('/check-seller', methods=['GET'])
+@jwt_required()
+def check_seller():
+    """Check if the current user is a seller"""
+    try:
+        user_id = get_jwt_identity()
+        seller = Seller.query.filter_by(user_id=user_id).first()
+        if seller:
+            return jsonify({
+                "is_seller": True,
+                "seller": {
+                    "id": seller.id,
+                    "display_name": seller.display_name,
+                    "avatar": seller.avatar,
+                    "is_verified": seller.is_verified,
+                    "about": seller.about,
+                    "phone_no": seller.phone_no
+                }
+            }), 200
+        return jsonify({"is_seller": False}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @marketplace_bp.route('/products', methods=['GET'])
 def get_products():
     """
@@ -77,52 +100,48 @@ def get_products():
 @jwt_required()  # Requires JWT authentication
 def add_seller():
     try:
-        data = request.form  # Form data
+        data = request.form  # Form data (MultiDict)
         user_id = get_jwt_identity()  # Get the current user
-        about=data['about'],
-        phone_no=data['phone'],
-        avatar=data['avatar_url', None] 
 
-        print(about+phone_no+avatar)
+        display_name = data.get('display_name', '').strip()
+        about = data.get('about', '').strip()
+        phone_no = data.get('phone', '').strip() if data.get('phone') else None
+        avatar_url = None
 
+        if not display_name:
+            return jsonify({"error": "Business display name is required"}), 400
+        if not about:
+            return jsonify({"error": "About section is required"}), 400
 
         # Check if the user is already a seller
         existing_seller = Seller.query.filter_by(user_id=user_id).first()
         if existing_seller:
             return jsonify({"error": "User is already a seller"}), 400
 
-
         # Handle avatar file upload to R2 if provided
         if 'avatar_file' in request.files:
             file = request.files['avatar_file']
-            if file:
-                # Generate a unique file name using UUID and secure it
+            if file and file.filename:
                 filename = secure_filename(file.filename)
-                
-                # Upload file to Cloudflare R2 bucket
                 s3_client.upload_fileobj(
                     file,
                     R2_BUCKET_NAME,
                     filename,
-                    ExtraArgs={"ACL": "public-read"}  # Public read access
+                    ExtraArgs={"ACL": "public-read"}
                 )
-                
-                # Construct the public URL for the avatar
                 avatar_url = f"{IMAGE_PREFIX}/{filename}"
 
         # If a custom avatar URL is provided instead of a file
-        if 'avatar_url' in data :
-            avatar_url = data['avatar_url', None]
-
-        print(avatar_url)    
+        if data.get('avatar_url'):
+            avatar_url = data.get('avatar_url')
 
         # Create the seller profile in the database
         new_seller = Seller(
-            display_name=data['display_name'],
-            about=data['about'],
-            phone_no=data['phone'],
+            display_name=display_name,
+            about=about,
+            phone_no=phone_no,
             user_id=user_id,
-            avatar=avatar_url  # Save the avatar URL (either from R2 or provided URL)
+            avatar=avatar_url
         )
 
         db.session.add(new_seller)
