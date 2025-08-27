@@ -134,7 +134,7 @@ class Products(db.Model, SerializerMixin):
     category = db.Column(db.String(50))
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    seller_id = db.Column(db.Integer, db.ForeignKey('sellers.id'))
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'))
 
     # Other relationships
     reviews = db.relationship('Reviews', backref='product', lazy=True)
