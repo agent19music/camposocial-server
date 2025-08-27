@@ -31,15 +31,28 @@ def create_app():
     # Initialize Extensions
     db.init_app(app)
     migrate = Migrate(app, db)
+    
+    # Configure CORS with multiple allowed origins
+    allowed_origins = [
+        'http://localhost:3000',
+        'http://localhost:8888',
+        'https://camposocial.vercel.app',
+    ]
+    
+    # Add any additional origins from environment variable
+    frontend_url = os.getenv('FRONTEND_URL')
+    if frontend_url and frontend_url not in allowed_origins:
+        allowed_origins.append(frontend_url)
+    
     CORS(app,
-         origins=[os.getenv('FRONTEND_URL', 'http://localhost:3000')],
+         origins=allowed_origins,
          allow_headers=['Content-Type', 'Authorization'],
          supports_credentials=True)
     
     # Initialize SocketIO with proper configuration
     socketio = SocketIO(
         app, 
-        cors_allowed_origins=os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+        cors_allowed_origins=allowed_origins,  # Use the same origins as Flask CORS
         async_mode='threading',  # Use threading mode for better compatibility
         logger=True,  # Enable logging for debugging
         engineio_logger=True  # Enable engine.io logging
