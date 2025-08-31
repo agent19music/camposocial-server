@@ -1,10 +1,14 @@
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import MetaData, CheckConstraint
 from datetime import datetime
-from sqlalchemy_serializer import SerializerMixin
+# from sqlalchemy_serializer import SerializerMixin  # Temporarily disabled
 from sqlalchemy.orm import validates
 from cuid import cuid
 import re
+
+# Placeholder class to avoid errors
+class SerializerMixin:
+    pass
 
 # Define metadata with a naming convention for foreign keys
 metadata = MetaData(naming_convention={
@@ -29,7 +33,8 @@ class Users(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     public_key = db.Column(db.Text, nullable=True)
-    
+    yap_header_img = db.Column(db.String(255), nullable=True)
+
     # OAuth-specific fields
     oauth_provider = db.Column(db.String(50), nullable=True)  # 'google', 'github', 'twitter'
     oauth_id = db.Column(db.String(255), nullable=True)       # Provider-specific user ID
@@ -48,6 +53,8 @@ class Users(db.Model, SerializerMixin):
 
     messages = db.relationship('Message', backref='author', lazy=True)
     reactions = db.relationship('Reaction', backref='user', lazy=True)
+    user_badges = db.relationship('UserBadge', backref='user', lazy=True)
+    badge_transactions = db.relationship('BadgeTransaction', backref='user', lazy=True)
 
     # Method to get all reviews belonging to a user
     def get_reviews(self):
@@ -77,6 +84,7 @@ class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     encrypted_content = db.Column(db.Text, nullable=False)  # Store the encrypted message
     is_deleted = db.Column(db.Boolean, default=False)
+    is_encrypted = db.Column(db.Boolean, default=True)  # Track if message is encrypted
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Foreign Keys
@@ -558,6 +566,294 @@ class TokenBlocklist(db.Model):
     jti =  db.Column(db.String(100),nullable=True)
     created_at = db.Column(db.DateTime(), default=datetime.utcnow)
 
+# ==================== PHASE 8 MODELS ====================
+
+# Groups/Communities
+class Group(db.Model, SerializerMixin):
+    __tablename__ = 'groups'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    name = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text)
+    category = db.Column(db.String(100))  # 'study', 'hobby', 'professional', 'event_planning', 'other'
+    privacy_type = db.Column(db.String(20), default='public')  # 'public', 'private', 'secret'
+    cover_image = db.Column(db.String(255))
+    icon_image = db.Column(db.String(255))
+    rules = db.Column(db.Text)
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    member_count = db.Column(db.Integer, default=0)
+    is_verified = db.Column(db.Boolean, default=False)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # Relationships
+    creator = db.relationship('Users', backref='created_groups')
+    members = db.relationship('GroupMember', backref='group', lazy=True, cascade='all, delete-orphan')
+    posts = db.relationship('GroupPost', backref='group', lazy=True, cascade='all, delete-orphan')
+    polls = db.relationship('Poll', backref='group', lazy=True)
+    
+    def __repr__(self):
+        return f"<Group {self.name}>"    
+
+class GroupMember(db.Model, SerializerMixin):
+    __tablename__ = 'group_members'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    role = db.Column(db.String(20), default='member')  # 'admin', 'moderator', 'member'
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # Relationships
+    user = db.relationship('Users', backref='group_memberships')
+    
+    __table_args__ = (
+        db.UniqueConstraint('group_id', 'user_id', name='unique_group_member'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupMember {self.user_id} in {self.group_id}>"        
+
+class GroupPost(db.Model, SerializerMixin):
+    __tablename__ = 'group_posts'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=False)
+    is_pinned = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    yap = db.relationship('Yap', backref='group_posts')
+    
+    def __repr__(self):
+        return f"<GroupPost {self.yap_id} in {self.group_id}>"
+
+# Polls and Surveys
+class Poll(db.Model, SerializerMixin):
+    __tablename__ = 'polls'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text)
+    creator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)  # NULL for campus-wide
+    poll_type = db.Column(db.String(20), default='single')  # 'single', 'multiple'
+    category = db.Column(db.String(50))  # 'campus', 'event', 'course', 'general'
+    is_anonymous = db.Column(db.Boolean, default=False)
+    is_active = db.Column(db.Boolean, default=True)
+    ends_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    total_votes = db.Column(db.Integer, default=0)
+    
+    # Relationships
+    creator = db.relationship('Users', backref='created_polls')
+    options = db.relationship('PollOption', backref='poll', lazy=True, cascade='all, delete-orphan')
+    votes = db.relationship('PollVote', backref='poll', lazy=True, cascade='all, delete-orphan')
+    
+    def __repr__(self):
+        return f"<Poll {self.title}>"
+
+class PollOption(db.Model, SerializerMixin):
+    __tablename__ = 'poll_options'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=False)
+    option_text = db.Column(db.String(255), nullable=False)
+    vote_count = db.Column(db.Integer, default=0)
+    order_index = db.Column(db.Integer, default=0)
+    
+    def __repr__(self):
+        return f"<PollOption {self.option_text}>"
+
+class PollVote(db.Model, SerializerMixin):
+    __tablename__ = 'poll_votes'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    option_id = db.Column(db.Integer, db.ForeignKey('poll_options.id'), nullable=False)
+    voted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = db.relationship('Users', backref='poll_votes')
+    option = db.relationship('PollOption', backref='votes')
+    
+    __table_args__ = (
+        db.UniqueConstraint('poll_id', 'user_id', name='unique_poll_vote'),
+    )
+    
+    def __repr__(self):
+        return f"<PollVote user:{self.user_id} poll:{self.poll_id}>"
+
+# Gamification and Achievements
+class UserPoints(db.Model, SerializerMixin):
+    __tablename__ = 'user_points'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
+    points_total = db.Column(db.Integer, default=0)
+    points_this_week = db.Column(db.Integer, default=0)
+    points_this_month = db.Column(db.Integer, default=0)
+    level = db.Column(db.Integer, default=1)
+    streak_days = db.Column(db.Integer, default=0)
+    last_activity_date = db.Column(db.Date)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Reputation scores
+    seller_reputation = db.Column(db.Float, default=0.0)
+    event_organizer_rating = db.Column(db.Float, default=0.0)
+    study_contributor_score = db.Column(db.Integer, default=0)
+    community_helper_rating = db.Column(db.Float, default=0.0)
+    
+    # Relationships
+    user = db.relationship('Users', backref=db.backref('points', uselist=False))
+    
+    def __repr__(self):
+        return f"<UserPoints user:{self.user_id} total:{self.points_total}>"
+
+class Achievement(db.Model, SerializerMixin):
+    __tablename__ = 'achievements'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    description = db.Column(db.Text)
+    icon_url = db.Column(db.String(255))
+    points_required = db.Column(db.Integer)
+    category = db.Column(db.String(50))  # 'social', 'marketplace', 'events', 'academic', 'community'
+    badge_type = db.Column(db.String(20))  # 'bronze', 'silver', 'gold', 'platinum'
+    criteria = db.Column(db.Text)  # JSON string with achievement criteria
+    is_active = db.Column(db.Boolean, default=True)
+    
+    def __repr__(self):
+        return f"<Achievement {self.name}>"
+
+class UserAchievement(db.Model, SerializerMixin):
+    __tablename__ = 'user_achievements'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    achievement_id = db.Column(db.Integer, db.ForeignKey('achievements.id'), nullable=False)
+    earned_at = db.Column(db.DateTime, default=datetime.utcnow)
+    progress = db.Column(db.Integer, default=100)  # Percentage of achievement completion
+    
+    # Relationships
+    user = db.relationship('Users', backref='achievements')
+    achievement = db.relationship('Achievement', backref='users_earned')
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'achievement_id', name='unique_user_achievement'),
+    )
+    
+    def __repr__(self):
+        return f"<UserAchievement user:{self.user_id} achievement:{self.achievement_id}>"
+
+class PointTransaction(db.Model, SerializerMixin):
+    __tablename__ = 'point_transactions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    points = db.Column(db.Integer, nullable=False)  # Positive for earned, negative for spent
+    transaction_type = db.Column(db.String(50))  # 'post_yap', 'like_received', 'event_attended', etc.
+    description = db.Column(db.String(255))
+    reference_id = db.Column(db.String)  # ID of related object (yap_id, event_id, etc.)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = db.relationship('Users', backref='point_transactions')
+    
+    def __repr__(self):
+        return f"<PointTransaction user:{self.user_id} points:{self.points}>"
+
+# Trending and Discovery
+class TrendingTopic(db.Model, SerializerMixin):
+    __tablename__ = 'trending_topics'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    topic_type = db.Column(db.String(20))  # 'hashtag', 'event', 'product', 'group', 'yap'
+    topic_id = db.Column(db.String)  # ID of the trending item
+    topic_name = db.Column(db.String(255))
+    score = db.Column(db.Float, default=0.0)  # Trending score
+    engagement_count = db.Column(db.Integer, default=0)  # Number of interactions
+    trending_since = db.Column(db.DateTime, default=datetime.utcnow)
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    def __repr__(self):
+        return f"<TrendingTopic {self.topic_type}:{self.topic_name}>"
+
+# Enhanced Notifications
+class NotificationPreference(db.Model, SerializerMixin):
+    __tablename__ = 'notification_preferences'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
+    
+    # Notification types
+    group_invites = db.Column(db.Boolean, default=True)
+    group_activity = db.Column(db.Boolean, default=True)
+    trending_content = db.Column(db.Boolean, default=True)
+    friend_milestones = db.Column(db.Boolean, default=True)
+    event_reminders = db.Column(db.Boolean, default=True)
+    marketplace_alerts = db.Column(db.Boolean, default=True)
+    poll_results = db.Column(db.Boolean, default=True)
+    achievement_unlocked = db.Column(db.Boolean, default=True)
+    
+    # Delivery preferences
+    email_enabled = db.Column(db.Boolean, default=False)
+    push_enabled = db.Column(db.Boolean, default=True)
+    sms_enabled = db.Column(db.Boolean, default=False)
+    
+    # Quiet hours
+    quiet_hours_enabled = db.Column(db.Boolean, default=False)
+    quiet_hours_start = db.Column(db.Time)  # e.g., 22:00
+    quiet_hours_end = db.Column(db.Time)    # e.g., 08:00
+    
+    # Priority settings
+    min_priority_level = db.Column(db.String(10), default='low')  # 'low', 'medium', 'high'
+    
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = db.relationship('Users', backref=db.backref('notification_preferences', uselist=False))
+    
+    def __repr__(self):
+        return f"<NotificationPreference user:{self.user_id}>"
+
+class EnhancedNotification(db.Model, SerializerMixin):
+    __tablename__ = 'enhanced_notifications'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    type = db.Column(db.String(50), nullable=False)  # Same as before, plus new types
+    priority = db.Column(db.String(10), default='medium')  # 'low', 'medium', 'high'
+    recipient_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    
+    # Reference fields for different types
+    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)
+    poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
+    achievement_id = db.Column(db.Integer, db.ForeignKey('achievements.id'), nullable=True)
+    yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=True)
+    event_id = db.Column(db.String, db.ForeignKey('events.id'), nullable=True)
+    
+    title = db.Column(db.String(255))
+    message = db.Column(db.Text)
+    action_url = db.Column(db.String(255))  # URL to navigate when clicked
+    
+    is_read = db.Column(db.Boolean, default=False)
+    is_delivered = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    read_at = db.Column(db.DateTime)
+    
+    # Relationships
+    recipient = db.relationship('Users', foreign_keys=[recipient_id], backref='enhanced_notifications_received')
+    sender = db.relationship('Users', foreign_keys=[sender_id], backref='enhanced_notifications_sent')
+    
+    def __repr__(self):
+        return f"<EnhancedNotification {self.type} to:{self.recipient_id}>"
+
 
 
 # Serialization rules
@@ -610,3 +906,52 @@ Wishlists.serialize_rules = (
     'product.description',
     'product.price'
 )
+
+# Badge System Models
+class Badge(db.Model):
+    __tablename__ = 'badges'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    image_url = db.Column(db.String(500), nullable=False)  # URL to badge image/gif
+    price_ksh = db.Column(db.Integer, nullable=False)  # Price in Kenyan Shillings
+    is_animated = db.Column(db.Boolean, default=False)  # Whether it's a GIF
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    user_badges = db.relationship('UserBadge', backref='badge', lazy=True)
+    transactions = db.relationship('BadgeTransaction', backref='badge', lazy=True)
+
+class UserBadge(db.Model):
+    __tablename__ = 'user_badges'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    badge_id = db.Column(db.Integer, db.ForeignKey('badges.id'), nullable=False)
+    is_displayed = db.Column(db.Boolean, default=True)  # Whether to show on profile
+    display_order = db.Column(db.Integer, default=0)  # Order to display badges
+    purchased_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (db.UniqueConstraint('user_id', 'badge_id', name='unique_user_badge'),)
+
+class BadgeTransaction(db.Model):
+    __tablename__ = 'badge_transactions'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    badge_id = db.Column(db.Integer, db.ForeignKey('badges.id'), nullable=False)
+    
+    # M-Pesa transaction details
+    phone_number = db.Column(db.String(15), nullable=False)
+    amount = db.Column(db.Integer, nullable=False)  # Amount in KES
+    mpesa_receipt_number = db.Column(db.String(50), unique=True)
+    mpesa_transaction_id = db.Column(db.String(50), unique=True)
+    checkout_request_id = db.Column(db.String(100))  # For tracking STK push
+    
+    # Transaction status
+    status = db.Column(db.String(20), default='PENDING')  # PENDING, COMPLETED, FAILED, CANCELLED
+    payment_method = db.Column(db.String(20), default='MPESA')
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    
+    # Error tracking
+    error_message = db.Column(db.Text, nullable=True)

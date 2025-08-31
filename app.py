@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from api_docs import api_bp as api_doc_bp
 from api_explorer import api_explorer_bp
 from welcome import welcome_bp
+from websocket_handlers import register_socket_handlers
 
 load_dotenv()
 
@@ -62,6 +63,9 @@ def create_app():
         engineio_logger=True  # Enable engine.io logging
     )
     
+    # Register enhanced WebSocket handlers
+    register_socket_handlers(socketio)
+    
     # JWT Setup
     jwt = JWTManager(app)
 
@@ -79,6 +83,41 @@ def create_app():
     app.register_blueprint(auth_bp, url_prefix='/camposocial/api')
     app.register_blueprint(yap_bp, url_prefix='/camposocial/api')
     app.register_blueprint(friends_bp, url_prefix='/camposocial/api')
+    app.register_blueprint(message_bp, url_prefix='/camposocial/api')
+    
+    # Register enhanced friends blueprint
+    from views.friends_enhanced_view import friends_enhanced_bp
+    app.register_blueprint(friends_enhanced_bp, url_prefix='/camposocial/api')
+    
+    # Register media handling blueprint
+    from views.media_view import media_bp
+    app.register_blueprint(media_bp, url_prefix='/camposocial/api')
+    
+    # Register advanced messaging blueprint
+    from views.message_advanced_view import message_advanced_bp
+    app.register_blueprint(message_advanced_bp, url_prefix='/camposocial/api')
+    
+    # ========== PHASE 8 BLUEPRINTS ==========
+    # Register Groups management blueprint
+    from views.groups_view import groups_bp
+    app.register_blueprint(groups_bp, url_prefix='/camposocial/api')
+    
+    # Register Polls and Surveys blueprint
+    from views.polls_view import polls_bp
+    app.register_blueprint(polls_bp, url_prefix='/camposocial/api')
+    
+    # Register Gamification blueprint
+    from views.gamification_view import gamification_bp
+    app.register_blueprint(gamification_bp, url_prefix='/camposocial/api')
+    
+    # Register Trending and Notifications blueprints
+    from views.phase8_combined_view import trending_bp, notifications_bp
+    app.register_blueprint(trending_bp, url_prefix='/camposocial/api')
+    app.register_blueprint(notifications_bp, url_prefix='/camposocial/api')
+    
+    # Register Badges blueprint
+    from views.badges_view import badges_bp
+    app.register_blueprint(badges_bp, url_prefix='/camposocial/api/badges')
     
     # Register API documentation blueprint
     app.register_blueprint(api_doc_bp)
@@ -172,4 +211,4 @@ app, socketio = create_app()
 
 if __name__ == '__main__':
     # Run the app
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001)

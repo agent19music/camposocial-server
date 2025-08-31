@@ -11,6 +11,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    libgl1 \
+    libgtk2.0-dev \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 

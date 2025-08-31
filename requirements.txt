@@ -1,3 +1,6 @@
+# HTTP Requests
+requests==2.31.0
+
 # Core Flask
 flask==3.0.2
 werkzeug==3.0.1
@@ -65,6 +68,17 @@ pytz==2024.1
 aniso8601==9.0.1
 jsonschema
 importlib-resources
+
+# Image Processing
+Pillow==10.2.0
+opencv-python==4.9.0.80
+numpy==1.26.4
+
+# File Type Detection
+python-magic==0.4.27
+
+# Cryptography
+cryptography
 
 # Other
 packaging==23.2
