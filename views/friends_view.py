@@ -3,6 +3,7 @@ from flask import request, jsonify, Blueprint
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import or_, and_, func
 from datetime import datetime
+from websocket_handlers import notify_friend_request, notify_friend_request_response
 
 friends_bp = Blueprint('friends_bp', __name__)
 
@@ -145,6 +146,9 @@ def send_friend_request():
     db.session.add(friendship)
     db.session.commit()
     
+    # Send real-time notification to the target user
+    notify_friend_request(target_user_id, current_user_id)
+    
     return jsonify({
         'message': 'Friend request sent successfully',
         'friendship_id': friendship.id
@@ -169,6 +173,9 @@ def accept_friend_request(request_id):
     friendship.updated_at = datetime.utcnow()
     db.session.commit()
     
+    # Send real-time notification to the requester
+    notify_friend_request_response(friendship.requester_id, current_user_id, 'accepted', friendship.id)
+    
     return jsonify({'message': 'Friend request accepted'}), 200
 
 @friends_bp.route('/friends/request/<int:request_id>/decline', methods=['POST'])
@@ -189,6 +196,9 @@ def decline_friend_request(request_id):
     friendship.status = 'declined'
     friendship.updated_at = datetime.utcnow()
     db.session.commit()
+    
+    # Send real-time notification to the requester
+    notify_friend_request_response(friendship.requester_id, current_user_id, 'declined', friendship.id)
     
     return jsonify({'message': 'Friend request declined'}), 200
 

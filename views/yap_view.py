@@ -8,6 +8,7 @@ import base64
 import os
 import boto3
 import re
+from websocket_handlers import notify_new_yap
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from sqlalchemy import desc
@@ -156,6 +157,9 @@ def add_yap():
 
         # Commit the session to finalize changes
         db.session.commit()
+
+        # Send real-time notification for new yap
+        notify_new_yap(new_yap.id, user_id)
 
         return jsonify({
             "message": "Yap added successfully!",
