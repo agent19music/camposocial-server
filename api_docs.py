@@ -15,7 +15,7 @@ api = Api(
     doc='/docs',  # This is where Swagger UI will be available
     ordered=True,
     contact='CampoSocial Team',
-    contact_email='support@camposocial.com'
+    contact_email='support@camposocial.app'
 )
 
 # Define namespaces for different API sections

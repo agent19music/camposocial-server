@@ -332,7 +332,7 @@ Use the Swagger documentation at `/docs` to test all endpoints with proper authe
 For issues or questions about Phase 8 features:
 - Check API documentation at `/docs`
 - Review error logs in `logs/`
-- Contact: support@camposocial.com
+- Contact: support@camposocial.app
 
 ---
 

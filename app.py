@@ -146,64 +146,9 @@ def create_app():
                 }
             },
             'status': 'active',
-            'contact': 'support@camposocial.com'
+            'contact': 'support@camposocial.app'
         })
     
-
-    # Socket.IO event handlers
-    @socketio.on('connect')
-    def handle_connect(auth=None):
-        try:
-            print(f'Client attempting to connect: {request.sid}')
-            # Basic connection allowed - authentication will be verified per-event
-            print(f'Client connected: {request.sid}')
-            emit('connected', {'status': 'success', 'sid': request.sid})
-            return True
-        except Exception as e:
-            print(f'Connection error: {str(e)}')
-            emit('error', {'message': 'Connection failed'})
-            return False
-        
-    @socketio.on('disconnect')
-    def handle_disconnect():
-        print(f'Client disconnected: {request.sid}')
-        
-    @socketio.on('join_conversation')
-    def handle_join_conversation(data):
-        try:
-            if not data:
-                emit('error', {'message': 'No data provided'})
-                return
-                
-            conversation_id = data.get('conversationId')
-            auth_token = data.get('auth_token')
-            
-            if not auth_token:
-                emit('error', {'message': 'Authentication required'})
-                return
-                
-            if conversation_id:
-                join_room(conversation_id)
-                print(f'Client {request.sid} joined conversation {conversation_id}')
-                emit('joined_conversation', {'conversationId': conversation_id})
-            else:
-                emit('error', {'message': 'No conversation ID provided'})
-        except Exception as e:
-            print(f'Error joining conversation: {str(e)}')
-            emit('error', {'message': 'Failed to join conversation'})
-            
-    @socketio.on('leave_conversation')
-    def handle_leave_conversation(data):
-        try:
-            conversation_id = data.get('conversationId')
-            if conversation_id:
-                leave_room(conversation_id)
-                print(f'Client {request.sid} left conversation {conversation_id}')
-                emit('left_conversation', {'conversationId': conversation_id})
-        except Exception as e:
-            print(f'Error leaving conversation: {str(e)}')
-            emit('error', {'message': 'Failed to leave conversation'})
-
     return app, socketio
 
 # Create app instance for Flask CLI

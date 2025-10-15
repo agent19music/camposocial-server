@@ -158,8 +158,9 @@ def add_yap():
         # Commit the session to finalize changes
         db.session.commit()
 
-        # Send real-time notification for new yap
-        notify_new_yap(new_yap.id, user_id)
+        # Broadcast new yap to followers
+        from websocket_handlers import broadcast_new_yap_to_followers
+        broadcast_new_yap_to_followers(new_yap.id, user_id)
 
         return jsonify({
             "message": "Yap added successfully!",
@@ -498,6 +499,12 @@ def toggle_like_yap(yap_id):
                 db.session.add(notification)
             
             db.session.commit()
+            
+            # Send real-time notification if not self-like
+            if yap.user_id != user_id:
+                from websocket_handlers import notify_yap_like
+                notify_yap_like(yap.user_id, user_id, yap_id)
+            
             return jsonify({
                 'message': 'Yap liked successfully',
                 'liked': True,
@@ -551,6 +558,11 @@ def add_reply(yap_id):
             db.session.add(notification)
         
         db.session.commit()
+        
+        # Send real-time notification if not self-reply
+        if yap.user_id != user_id:
+            from websocket_handlers import notify_new_reply
+            notify_new_reply(yap.user_id, user_id, yap_id, content)
         
         # Return the new reply with user info
         user = Users.query.get(user_id)
@@ -855,6 +867,24 @@ def get_hashtag_suggestions():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Get who to follow suggestions
+@yap_bp.route('/who-to-follow/suggestions', methods=['GET'])
+@jwt_required()
+def get_who_to_follow_suggestions():
+    try:
+        query = request.args.get('q', '').lower()
+        limit = request.args.get('limit', 10, type=int)
+        
+        # Get users to follow
+        from models import User
+        users = User.query.filter(User.username.ilike(f'%{query}%')).limit(limit).all()        
+        suggestions = [{'name': user.username, 'usage_count': user.usage_count} for user in users]
+        
+        return jsonify({'users': suggestions}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 # Get location suggestions
 @yap_bp.route('/locations/suggestions', methods=['GET'])
@@ -893,6 +923,8 @@ def get_location_suggestions():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
 
 
 # Get user profile for yap profile screen

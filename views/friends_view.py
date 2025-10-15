@@ -296,7 +296,7 @@ def get_conversation(conversation_id):
         'first_name': other_user.first_name,
         'last_name': other_user.last_name,
         'avatar': other_user.avatar,
-        'is_online': False  # Implement online status
+        'is_online': False  # Implement online status   
     }), 200
 
 @friends_bp.route('/conversation-exists/<int:friend_id>', methods=['GET'])

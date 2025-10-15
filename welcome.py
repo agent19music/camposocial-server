@@ -331,7 +331,7 @@ WELCOME_HTML = """
             <div class="footer-links">
                 <a href="/docs" class="footer-link">Documentation</a>
                 <a href="/api-explorer" class="footer-link">Explorer</a>
-                <a href="mailto:support@camposocial.com" class="footer-link">Support</a>
+                <a href="mailto:support@camposocial.app" class="footer-link">Support</a>
             </div>
             <div class="copyright">
                 Made with ❤️ by CampoSocial Team
