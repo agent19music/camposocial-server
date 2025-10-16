@@ -42,12 +42,17 @@ def create_app():
         'http://localhost:3000',
         'http://localhost:8888',
         'https://camposocial.vercel.app',
+        'https://seller.camposocial.app',
     ]
     
     # Add any additional origins from environment variable
     frontend_url = os.getenv('FRONTEND_URL')
     if frontend_url and frontend_url not in allowed_origins:
         allowed_origins.append(frontend_url)
+
+    seller_dash_url = os.getenv('SELLER_DASHBOARD_URL')
+    if seller_dash_url and seller_dash_url not in allowed_origins:
+        allowed_origins.append(seller_dash_url)
     
     CORS(app,
          origins=allowed_origins,

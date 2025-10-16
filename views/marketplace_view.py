@@ -1,4 +1,4 @@
-from models import db, Products, Wishlists, Reviews, Users, ProductVariation, ProductImages, Order,Seller,Cart, CartItem, OrderItem
+from models import db, Products, Wishlists, Reviews, Users, ProductVariation, ProductImages, Order, Seller, Cart, CartItem, OrderItem
 from flask import request, jsonify, Blueprint,make_response
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
@@ -22,12 +22,31 @@ IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
 PAYSTACK_SECRET_KEY = os.getenv('PAYSTACK_SECRET_KEY')
 
 
-s3_client = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT_URL,
-    aws_access_key_id=R2_ACCESS_KEY_ID,
-    aws_secret_access_key=R2_SECRET_ACCESS_KEY
-)   
+def get_s3_client():
+    if not all([R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+        return None
+    return boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT_URL,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY
+    )
+
+s3_client = get_s3_client()
+
+
+def serialize_seller(seller: Seller):
+    return {
+        "id": seller.id,
+        "display_name": seller.display_name,
+        "about": seller.about,
+        "avatar": seller.avatar,
+        "phone_no": seller.phone_no,
+        "is_verified": seller.is_verified,
+        "created_at": seller.created_at.isoformat() if getattr(seller, "created_at", None) else None,
+        "total_products": seller.product_count(),
+        "total_sales": seller.total_sales(),
+    }
 
 @marketplace_bp.route('/check-seller', methods=['GET'])
 @jwt_required()
@@ -39,16 +58,26 @@ def check_seller():
         if seller:
             return jsonify({
                 "is_seller": True,
-                "seller": {
-                    "id": seller.id,
-                    "display_name": seller.display_name,
-                    "avatar": seller.avatar,
-                    "is_verified": seller.is_verified,
-                    "about": seller.about,
-                    "phone_no": seller.phone_no
-                }
+                "seller": serialize_seller(seller)
             }), 200
         return jsonify({"is_seller": False}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@marketplace_bp.route('/seller/me', methods=['GET'])
+@jwt_required()
+def get_current_seller():
+    """Return the authenticated user's seller profile if it exists"""
+    try:
+        user_id = get_jwt_identity()
+        seller = Seller.query.filter_by(user_id=user_id).first()
+        if not seller:
+            return jsonify({"is_seller": False}), 200
+        return jsonify({
+            "is_seller": True,
+            "seller": serialize_seller(seller)
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -97,57 +126,66 @@ def get_products():
         return jsonify({'error': str(e)}), 500
 
 @marketplace_bp.route('/seller', methods=['POST'])
-@jwt_required()  # Requires JWT authentication
+@jwt_required()
 def add_seller():
     try:
-        data = request.form  # Form data (MultiDict)
-        user_id = get_jwt_identity()  # Get the current user
+        user_id = get_jwt_identity()
 
-        display_name = data.get('display_name', '').strip()
-        about = data.get('about', '').strip()
-        phone_no = data.get('phone', '').strip() if data.get('phone') else None
-        avatar_url = None
+        is_multipart = request.content_type and 'multipart/form-data' in request.content_type
+        data = request.form if is_multipart else (request.get_json() or {})
+
+        display_name = (data.get('display_name') or '').strip()
+        about = (data.get('about') or '').strip()
+        phone_no = (data.get('phone') or '').strip() if data.get('phone') else None
 
         if not display_name:
             return jsonify({"error": "Business display name is required"}), 400
         if not about:
             return jsonify({"error": "About section is required"}), 400
 
-        # Check if the user is already a seller
         existing_seller = Seller.query.filter_by(user_id=user_id).first()
+
+        avatar_url = (data.get('avatar_url') or '').strip() or (existing_seller.avatar if existing_seller else None)
+        avatar_file = request.files.get('avatar_file') if is_multipart else None
+
+        if avatar_file and avatar_file.filename:
+            if not s3_client:
+                return jsonify({"error": "Image upload service is not configured"}), 500
+            filename = secure_filename(avatar_file.filename)
+            s3_client.upload_fileobj(
+                avatar_file,
+                R2_BUCKET_NAME,
+                filename,
+                ExtraArgs={"ACL": "public-read"}
+            )
+            avatar_url = f"{IMAGE_PREFIX}/{filename}"
+
         if existing_seller:
-            return jsonify({"error": "User is already a seller"}), 400
+            existing_seller.display_name = display_name
+            existing_seller.about = about
+            existing_seller.phone_no = phone_no
+            existing_seller.avatar = avatar_url
+            seller_record = existing_seller
+        else:
+            seller_record = Seller(
+                display_name=display_name,
+                about=about,
+                phone_no=phone_no,
+                user_id=user_id,
+                avatar=avatar_url
+            )
+            db.session.add(seller_record)
 
-        # Handle avatar file upload to R2 if provided
-        if 'avatar_file' in request.files:
-            file = request.files['avatar_file']
-            if file and file.filename:
-                filename = secure_filename(file.filename)
-                s3_client.upload_fileobj(
-                    file,
-                    R2_BUCKET_NAME,
-                    filename,
-                    ExtraArgs={"ACL": "public-read"}
-                )
-                avatar_url = f"{IMAGE_PREFIX}/{filename}"
+        user = Users.query.get(user_id)
+        if user:
+            user.profile_completed = True
 
-        # If a custom avatar URL is provided instead of a file
-        if data.get('avatar_url'):
-            avatar_url = data.get('avatar_url')
-
-        # Create the seller profile in the database
-        new_seller = Seller(
-            display_name=display_name,
-            about=about,
-            phone_no=phone_no,
-            user_id=user_id,
-            avatar=avatar_url
-        )
-
-        db.session.add(new_seller)
         db.session.commit()
 
-        return jsonify({"message": "Seller profile created successfully"}), 201
+        return jsonify({
+            "message": "Seller profile saved successfully",
+            "seller": serialize_seller(seller_record)
+        }), 200 if existing_seller else 201
 
     except Exception as e:
         db.session.rollback()

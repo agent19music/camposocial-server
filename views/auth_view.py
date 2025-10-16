@@ -1,4 +1,4 @@
-from models import db, Users, TokenBlocklist
+from models import db, Users, TokenBlocklist, Seller
 from flask import request, jsonify, Blueprint
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
@@ -71,7 +71,8 @@ def authenticated_user():
             'last_name': user.last_name,
             'course': user.category,
             'joined': user.created_at,
-            'display_name': user.display_name
+            'display_name': user.display_name,
+            'is_seller': Seller.query.filter_by(user_id=user.id).first() is not None
         }
         return jsonify(user_data), 200
     else:

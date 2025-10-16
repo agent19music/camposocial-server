@@ -78,6 +78,89 @@ class Users(db.Model, SerializerMixin):
         if '@' not in email or '.' not in email.split('@')[1]:
             raise AssertionError('Invalid email format')
         return email
+    
+    @staticmethod
+    def get_suggested_users_for_follow(current_user_id, limit=10):
+        """Get suggested users to follow based on various criteria"""
+        from sqlalchemy import func, or_
+        from datetime import datetime, timedelta
+        
+        # Get users that the current user already follows
+        following_ids = [f.following_id for f in Follow.query.filter_by(follower_id=current_user_id).all()]
+        following_ids.append(current_user_id)  # Exclude self
+        
+        # Get mutual connections (users followed by people the current user follows)
+        mutual_connections = db.session.query(
+            Follow.following_id,
+            func.count(Follow.follower_id).label('mutual_count')
+        ).filter(
+            Follow.follower_id.in_(following_ids),
+            ~Follow.following_id.in_(following_ids)
+        ).group_by(Follow.following_id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit * 2).all()
+        
+        # Get popular users (users with most followers who aren't already followed)
+        popular_users = db.session.query(
+            Users.id,
+            func.count(Follow.follower_id).label('follower_count')
+        ).outerjoin(Follow, Follow.following_id == Users.id
+        ).filter(
+            ~Users.id.in_(following_ids)
+        ).group_by(Users.id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit * 2).all()
+        
+        # Get active users (users who posted recently)
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        active_users = db.session.query(
+            Users.id,
+            func.count(Yap.id).label('recent_yaps')
+        ).outerjoin(Yap, Yap.user_id == Users.id
+        ).filter(
+            ~Users.id.in_(following_ids),
+            or_(Yap.created_at >= seven_days_ago, Yap.id.is_(None))
+        ).group_by(Users.id).order_by(
+            func.count(Yap.id).desc()
+        ).limit(limit * 2).all()
+        
+        # Combine and score the suggestions
+        suggestions = {}
+        
+        # Add mutual connections with high weight
+        for user_id, mutual_count in mutual_connections:
+            suggestions[user_id] = {
+                'user_id': user_id,
+                'score': mutual_count * 3,  # High weight for mutual connections
+                'reason': 'mutual_connections'
+            }
+        
+        # Add popular users with medium weight
+        for user_id, follower_count in popular_users:
+            if user_id in suggestions:
+                suggestions[user_id]['score'] += follower_count * 2
+                suggestions[user_id]['reason'] = 'popular_and_mutual'
+            else:
+                suggestions[user_id] = {
+                    'user_id': user_id,
+                    'score': follower_count * 2,
+                    'reason': 'popular'
+                }
+        
+        # Add active users with medium weight
+        for user_id, recent_yaps in active_users:
+            if user_id in suggestions:
+                suggestions[user_id]['score'] += recent_yaps * 1
+            else:
+                suggestions[user_id] = {
+                    'user_id': user_id,
+                    'score': recent_yaps * 1,
+                    'reason': 'active'
+                }
+        
+        # Sort by score and return user IDs
+        sorted_suggestions = sorted(suggestions.values(), key=lambda x: x['score'], reverse=True)[:limit]
+        return [s['user_id'] for s in sorted_suggestions]
 
 class Message(db.Model):
     __tablename__ = 'messages'
@@ -128,7 +211,22 @@ class Events(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    comments = db.relationship('Comment_events', backref='event', lazy=True)
+    comments = db.relationship('Comment_events', backref='event', lazy=True, cascade='all, delete-orphan')
+    ticket_groups = db.relationship('EventTicketGroup', backref='event', lazy=True, cascade='all, delete-orphan')
+
+
+class EventTicketGroup(db.Model, SerializerMixin):
+    __tablename__ = 'event_ticket_groups'
+
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    event_id = db.Column(db.String, db.ForeignKey('events.id'), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    tickets_per_group = db.Column(db.Integer, nullable=False, default=1)
+    description = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
 class Products(db.Model, SerializerMixin):
     __tablename__ = 'products'
@@ -378,6 +476,74 @@ class Follow(db.Model):
 
     def __repr__(self):
         return f"<Follow {self.follower.username} -> {self.following.username}>"
+    
+    @staticmethod
+    def get_following_ids(user_id):
+        """Get list of user IDs that the given user follows"""
+        from sqlalchemy import func
+        return [f.following_id for f in Follow.query.filter_by(follower_id=user_id).all()]
+    
+    @staticmethod
+    def get_follower_ids(user_id):
+        """Get list of user IDs that follow the given user"""
+        from sqlalchemy import func
+        return [f.follower_id for f in Follow.query.filter_by(following_id=user_id).all()]
+    
+    @staticmethod
+    def get_mutual_connections(user_id, limit=10):
+        """Get users who are followed by people the current user follows"""
+        from sqlalchemy import func
+        # Get users that the current user follows
+        following_ids = Follow.get_following_ids(user_id)
+        following_ids.append(user_id)  # Exclude self
+        
+        return db.session.query(
+            Follow.following_id,
+            func.count(Follow.follower_id).label('mutual_count')
+        ).filter(
+            Follow.follower_id.in_(following_ids),
+            ~Follow.following_id.in_(following_ids)
+        ).group_by(Follow.following_id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit).all()
+    
+    @staticmethod
+    def get_popular_users(exclude_ids=None, limit=10):
+        """Get users with most followers"""
+        from sqlalchemy import func
+        query = db.session.query(
+            Users.id,
+            func.count(Follow.follower_id).label('follower_count')
+        ).outerjoin(Follow, Follow.following_id == Users.id)
+        
+        if exclude_ids:
+            query = query.filter(~Users.id.in_(exclude_ids))
+            
+        return query.group_by(Users.id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit).all()
+    
+    @staticmethod
+    def get_active_users(exclude_ids=None, days=7, limit=10):
+        """Get users who have been active recently"""
+        from sqlalchemy import func
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        query = db.session.query(
+            Users.id,
+            func.count(Yap.id).label('recent_yaps')
+        ).outerjoin(Yap, Yap.user_id == Users.id).filter(
+            or_(Yap.created_at >= cutoff_date, Yap.id.is_(None))
+        )
+        
+        if exclude_ids:
+            query = query.filter(~Users.id.in_(exclude_ids))
+            
+        return query.group_by(Users.id).order_by(
+            func.count(Yap.id).desc()
+        ).limit(limit).all()
 
 # UserHashtag model (many-to-many relationship between users and hashtags they follow)
 class UserHashtag(db.Model):
@@ -480,6 +646,28 @@ class Comment_events(db.Model, SerializerMixin):
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
     event_id = db.Column(db.String, db.ForeignKey('events.id'))
+    parent_comment_id = db.Column(db.Integer, db.ForeignKey('comment_events.id'))
+
+    replies = db.relationship(
+        'Comment_events',
+        backref=db.backref('parent_comment', remote_side=[id]),
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+    likes = db.relationship('CommentEventLike', backref='comment', lazy=True, cascade='all, delete-orphan')
+
+
+class CommentEventLike(db.Model, SerializerMixin):
+    __tablename__ = 'comment_event_likes'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    comment_id = db.Column(db.Integer, db.ForeignKey('comment_events.id'), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'comment_id', name='uq_comment_like_user'),
+    )
 
 
 class Reviews(db.Model, SerializerMixin):
@@ -869,6 +1057,7 @@ Users.serialize_rules = (
 Events.serialize_rules = (
     '-users.events',
     '-comments.event',
+    '-ticket_groups.event',
 )
 
 Products.serialize_rules = (
@@ -883,9 +1072,23 @@ Yap.serialize_rules = (
 )
 
 
+EventTicketGroup.serialize_rules = (
+    '-event.ticket_groups',
+)
+
+
 Comment_events.serialize_rules = (
     '-users.comment_events',
     '-events.comment_events',
+    '-replies.parent_comment',
+    '-parent_comment.replies',
+    '-likes.comment',
+)
+
+
+CommentEventLike.serialize_rules = (
+    '-comment.likes',
+    '-user.likes',
 )
 
 

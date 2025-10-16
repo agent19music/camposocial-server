@@ -872,20 +872,124 @@ def get_hashtag_suggestions():
 @jwt_required()
 def get_who_to_follow_suggestions():
     try:
-        query = request.args.get('q', '').lower()
+        current_user_id = get_jwt_identity()
         limit = request.args.get('limit', 10, type=int)
         
-        # Get users to follow
-        from models import User
-        users = User.query.filter(User.username.ilike(f'%{query}%')).limit(limit).all()        
-        suggestions = [{'name': user.username, 'usage_count': user.usage_count} for user in users]
+        from models import Follow, Users, Yap, Like, Reply
         
-        return jsonify({'users': suggestions}), 200
+        # Get users that the current user already follows
+        following_ids = db.session.query(Follow.following_id).filter_by(follower_id=current_user_id).all()
+        following_ids = [f.following_id for f in following_ids]
+        following_ids.append(current_user_id)  # Exclude self
+        
+        # Get mutual connections (users followed by people the current user follows)
+        mutual_connections = db.session.query(
+            Follow.following_id,
+            func.count(Follow.follower_id).label('mutual_count')
+        ).filter(
+            Follow.follower_id.in_(following_ids),
+            ~Follow.following_id.in_(following_ids)
+        ).group_by(Follow.following_id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit * 2).all()
+        
+        # Get popular users (users with most followers who aren't already followed)
+        popular_users = db.session.query(
+            Users.id,
+            func.count(Follow.follower_id).label('follower_count')
+        ).outerjoin(Follow, Follow.following_id == Users.id
+        ).filter(
+            ~Users.id.in_(following_ids)
+        ).group_by(Users.id).order_by(
+            func.count(Follow.follower_id).desc()
+        ).limit(limit * 2).all()
+        
+        # Get active users (users who posted recently)
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        active_users = db.session.query(
+            Users.id,
+            func.count(Yap.id).label('recent_yaps')
+        ).outerjoin(Yap, Yap.user_id == Users.id
+        ).filter(
+            ~Users.id.in_(following_ids),
+            or_(Yap.created_at >= seven_days_ago, Yap.id.is_(None))
+        ).group_by(Users.id).order_by(
+            func.count(Yap.id).desc()
+        ).limit(limit * 2).all()
+        
+        # Combine and score the suggestions
+        suggestions = {}
+        
+        # Add mutual connections with high weight
+        for user_id, mutual_count in mutual_connections:
+            suggestions[user_id] = {
+                'user_id': user_id,
+                'score': mutual_count * 3,  # High weight for mutual connections
+                'reason': 'mutual_connections'
+            }
+        
+        # Add popular users with medium weight
+        for user_id, follower_count in popular_users:
+            if user_id in suggestions:
+                suggestions[user_id]['score'] += follower_count * 2
+                suggestions[user_id]['reason'] = 'popular_and_mutual'
+            else:
+                suggestions[user_id] = {
+                    'user_id': user_id,
+                    'score': follower_count * 2,
+                    'reason': 'popular'
+                }
+        
+        # Add active users with medium weight
+        for user_id, recent_yaps in active_users:
+            if user_id in suggestions:
+                suggestions[user_id]['score'] += recent_yaps * 1
+            else:
+                suggestions[user_id] = {
+                    'user_id': user_id,
+                    'score': recent_yaps * 1,
+                    'reason': 'active'
+                }
+        
+        # Sort by score and get user details
+        sorted_suggestions = sorted(suggestions.values(), key=lambda x: x['score'], reverse=True)[:limit]
+        
+        # Get user details for the top suggestions
+        user_ids = [s['user_id'] for s in sorted_suggestions]
+        users = Users.query.filter(Users.id.in_(user_ids)).all()
+        user_dict = {user.id: user for user in users}
+        
+        # Format the response
+        suggestions_data = []
+        for suggestion in sorted_suggestions:
+            user = user_dict.get(suggestion['user_id'])
+            if user:
+                # Get follower and following counts
+                follower_count = Follow.query.filter_by(following_id=user.id).count()
+                following_count = Follow.query.filter_by(follower_id=user.id).count()
+                
+                suggestions_data.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'display_name': user.display_name or f"{user.first_name} {user.last_name}",
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'avatar': user.avatar,
+                    'bio': user.bio,
+                    'category': user.category,
+                    'follower_count': follower_count,
+                    'following_count': following_count,
+                    'reason': suggestion['reason'],
+                    'score': suggestion['score']
+                })
+        
+        return jsonify({
+            'suggestions': suggestions_data,
+            'total': len(suggestions_data)
+        }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
 # Get location suggestions
 @yap_bp.route('/locations/suggestions', methods=['GET'])
 @jwt_required()
