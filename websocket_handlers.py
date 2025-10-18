@@ -1,16 +1,25 @@
 from flask_socketio import emit, join_room, leave_room, disconnect
 from flask_jwt_extended import decode_token
-from flask import request
+from flask import request, session
 from datetime import datetime
-from models import db, Users, Friendship, Conversation, EnhancedNotification, Yap
+from models import db, Users, Friendship, Conversation, EnhancedNotification, Yap, Message
 from models_blocking import UserActivity
 from sqlalchemy import or_, and_
 import json
+from collections import defaultdict
 
 # Store for user connections - improved for scalability
 active_users = {}  # {user_id: [socket_ids]}
 user_rooms = {}    # {socket_id: user_id}
 user_connections = {}  # Keep for backwards compatibility
+conversation_memberships = defaultdict(set)  # {socket_id: set(conversation_ids)}
+heartbeat_timestamps = {}  # {socket_id: datetime}
+
+HEARTBEAT_ACK_EVENT = 'heartbeat_ack'
+JOIN_CONVERSATION_EVENT = 'join_conversation'
+LEAVE_CONVERSATION_EVENT = 'leave_conversation'
+CONVERSATION_JOINED_EVENT = 'conversation_joined'
+CONVERSATION_LEFT_EVENT = 'conversation_left'
 
 # Store for notification counters per user
 notification_counters = {}
@@ -20,6 +29,34 @@ yap_counters = {}
 
 # Global socketio instance - will be set by register_socket_handlers
 socketio_instance = None
+
+def refresh_user_last_seen(user_id):
+    """Update only the last_seen timestamp for a user without toggling online state."""
+    try:
+        activity = UserActivity.query.filter_by(user_id=user_id).first()
+        if not activity:
+            activity = UserActivity(user_id=user_id)
+            db.session.add(activity)
+
+        activity.last_seen = datetime.utcnow()
+        db.session.commit()
+    except Exception as exc:
+        print(f"Error refreshing user {user_id} last_seen: {exc}")
+        db.session.rollback()
+
+def _authorize_conversation(user_id, conversation_id):
+    """Return conversation if user participates; otherwise None."""
+    if not conversation_id:
+        return None
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return None
+
+    if conversation.user1_id != user_id and conversation.user2_id != user_id:
+        return None
+
+    return conversation
 
 def authenticate_socket(auth_token):
     """Authenticate WebSocket connection using JWT token"""
@@ -84,77 +121,15 @@ def register_socket_handlers(socketio):
     global socketio_instance
     socketio_instance = socketio
     
-    @socketio.on('authenticate')
-    def handle_authenticate(data):
-        """Authenticate user and set up their connection"""
-        auth_token = data.get('token')
-        user_id = authenticate_socket(auth_token)
-        
-        if not user_id:
-            emit('error', {'message': 'Authentication failed'})
-            disconnect()
-            return
-        
-        # Store user's socket ID in improved structure
-        if user_id not in active_users:
-            active_users[user_id] = []
-        active_users[user_id].append(request.sid)
-        user_rooms[request.sid] = user_id
-        
-        # Keep backwards compatibility
-        user_connections[user_id] = request.sid
-        
-        # Initialize notification counters for the user
-        if user_id not in notification_counters:
-            notification_counters[user_id] = {
-                'friend_requests': 0,
-                'yap_notifications': 0,
-                'general_notifications': 0
-            }
-        
-        # Initialize yap counters for the user
-        if user_id not in yap_counters:
-            yap_counters[user_id] = {
-                'new_yaps_count': 0,
-                'last_seen_yap_time': datetime.utcnow()
-            }
-        
-        # Join user's personal room for notifications
-        join_room(f'user_{user_id}')
-        
-        # Update user activity - ONLINE
-        update_user_activity_status(user_id, True)
-        
-        # Send current notification counts
-        send_notification_counts(user_id)
-        
-        # Send current yap counts
-        send_yap_counts(user_id)
-        
-        # Get user's conversations and join those rooms
-        conversations = Conversation.query.filter(
-            or_(
-                Conversation.user1_id == user_id,
-                Conversation.user2_id == user_id
-            )
-        ).all()
-        
-        for conv in conversations:
-            join_room(str(conv.id))
-        
-        emit('authenticated', {'user_id': user_id})
-        
-        # Notify friends of online status
-        notify_friends_status_change(user_id, True)
-        
-        print(f"User {user_id} authenticated with socket {request.sid}")
+    # REMOVED: Old authenticate handler - authentication now happens automatically on connect
+    # Frontend no longer needs to call a separate authenticate event
     
     @socketio.on('connect')
     def handle_connect(auth):
         """Handle WebSocket connection with JWT authentication"""
         try:
             if not auth or 'token' not in auth:
-                print("No token provided")
+                print("❌ No token provided")
                 disconnect()
                 return False
             
@@ -166,54 +141,155 @@ def register_socket_handlers(socketio):
                 decoded_token = decode_token(token)
                 user_id = decoded_token['sub']
             except Exception as e:
-                print(f"Token decode error: {e}")
+                print(f"❌ Token decode error: {e}")
                 disconnect()
                 return False
             
             session_id = request.sid
             
+            session['user_id'] = user_id
+
             # Update session tracking
             if user_id not in active_users:
                 active_users[user_id] = []
             active_users[user_id].append(session_id)
             user_rooms[session_id] = user_id
             
-            # Join user room for notifications
+            # Keep backwards compatibility
+            user_connections[user_id] = request.sid
+            
+            # Initialize notification counters for the user
+            if user_id not in notification_counters:
+                notification_counters[user_id] = {
+                    'friend_requests': 0,
+                    'yap_notifications': 0,
+                    'general_notifications': 0
+                }
+            
+            # Initialize yap counters for the user
+            if user_id not in yap_counters:
+                yap_counters[user_id] = {
+                    'new_yaps_count': 0,
+                    'last_seen_yap_time': datetime.utcnow()
+                }
+            
+            # CRITICAL: Join user's personal room for notifications
             join_room(f'user_{user_id}')
+            print(f"✅ User {user_id} joined personal room user_{user_id}")
             
             # Update user activity - ONLINE
             update_user_activity_status(user_id, True)
             
+            # Inform client to join conversation rooms lazily
+            conversations = Conversation.query.filter(
+                or_(
+                    Conversation.user1_id == user_id,
+                    Conversation.user2_id == user_id
+                )
+            ).all()
+
+            joined = []
+            for conv in conversations:
+                room_id = str(conv.id)
+                joined.append(room_id)
+
+            emit('conversation_list', {
+                'conversations': joined,
+                'timestamp': datetime.utcnow().isoformat()
+            }, room=session_id)
+
+            # Send current notification counts
+            try:
+                send_notification_counts(user_id)
+            except Exception as e:
+                print(f"⚠️ Failed to send notification counts: {e}")
+            
+            # Send current yap counts
+            try:
+                send_yap_counts(user_id)
+            except Exception as e:
+                print(f"⚠️ Failed to send yap counts: {e}")
+
             # Notify friends of online status
             notify_friends_status_change(user_id, True)
-            
-            emit('connected', {'status': 'success', 'user_id': user_id})
-            print(f"User {user_id} connected with session {session_id}")
+
+            # Send success confirmation with metadata
+            emit('connected', {
+                'status': 'success',
+                'user_id': user_id,
+                'rooms_joined': len(joined) + 1,  # +1 for personal room
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            print(f"✅ User {user_id} connected with session {session_id}")
             
         except Exception as e:
             print(f"Connection error: {e}")
             disconnect()
             return False
     
-    @socketio.on('message')
-    def handle_message(data):
-        """Handle real-time message sending"""
+    @socketio.on('heartbeat')
+    def handle_heartbeat(_data=None):
+        """Handle heartbeat pings from clients to maintain presence."""
+        session_id = request.sid
+
+        if session_id not in user_rooms:
+            return
+
+        user_id = user_rooms[session_id]
+        heartbeat_timestamps[session_id] = datetime.utcnow()
+        refresh_user_last_seen(user_id)
+
+        emit(HEARTBEAT_ACK_EVENT, {
+            'timestamp': heartbeat_timestamps[session_id].isoformat()
+        }, room=session_id)
+
+    @socketio.on(JOIN_CONVERSATION_EVENT)
+    def handle_join_conversation(data):
+        """Handle explicit conversation room join requests."""
         session_id = request.sid
         if session_id not in user_rooms:
             return
-        
-        sender_id = user_rooms[session_id]
-        recipient_id = data.get('recipient_id')
-        message_content = data.get('content')
-        conversation_id = data.get('conversation_id')
-        
-        # Emit to recipient if online
-        emit('new_message', {
-            'sender_id': sender_id,
-            'content': message_content,
-            'conversation_id': conversation_id,
+
+        user_id = user_rooms[session_id]
+        conversation_id = data.get('conversation_id') if isinstance(data, dict) else None
+
+        conversation = _authorize_conversation(user_id, conversation_id)
+        if not conversation:
+            emit('conversation_join_error', {
+                'conversation_id': conversation_id,
+                'message': 'Conversation not found or access denied.'
+            }, room=session_id)
+            return
+
+        room_name = str(conversation.id)
+        join_room(room_name)
+        conversation_memberships[session_id].add(room_name)
+
+        emit(CONVERSATION_JOINED_EVENT, {
+            'conversation_id': room_name,
             'timestamp': datetime.utcnow().isoformat()
-        }, room=f'user_{recipient_id}')
+        }, room=session_id)
+
+    @socketio.on(LEAVE_CONVERSATION_EVENT)
+    def handle_leave_conversation(data):
+        """Handle explicit conversation room leave requests."""
+        session_id = request.sid
+        if session_id not in user_rooms:
+            return
+
+        conversation_id = data.get('conversation_id') if isinstance(data, dict) else None
+        if not conversation_id:
+            return
+
+        room_name = str(conversation_id)
+        if room_name in conversation_memberships.get(session_id, set()):
+            leave_room(room_name)
+            conversation_memberships[session_id].discard(room_name)
+            emit(CONVERSATION_LEFT_EVENT, {
+                'conversation_id': room_name,
+                'timestamp': datetime.utcnow().isoformat()
+            }, room=session_id)
+
     
     @socketio.on('typing')
     def handle_typing(data):
@@ -221,28 +297,27 @@ def register_socket_handlers(socketio):
         session_id = request.sid
         if session_id not in user_rooms:
             return
-        
+
         sender_id = user_rooms[session_id]
         recipient_id = data.get('recipient_id')
         is_typing = data.get('is_typing', False)
-        
-        emit('user_typing', {
-            'user_id': sender_id,
-            'is_typing': is_typing
-        }, room=f'user_{recipient_id}')
-        
-        # Also handle conversation-based typing (for backwards compatibility)
         conversation_id = data.get('conversation_id')
-        user_id = data.get('user_id')
-        
-        if conversation_id and user_id:
-            # Emit to everyone in conversation except sender
-            emit('typing_indicator', {
-                'user_id': user_id,
-                'is_typing': is_typing,
-                'conversation_id': conversation_id
-            }, room=str(conversation_id), include_self=False)
-        
+
+        if recipient_id:
+            emit('user_typing', {
+                'user_id': sender_id,
+                'is_typing': is_typing
+            }, room=f'user_{recipient_id}')
+
+        if conversation_id:
+            room_name = str(conversation_id)
+            if room_name in conversation_memberships.get(session_id, set()):
+                emit('typing_indicator', {
+                    'user_id': sender_id,
+                    'is_typing': is_typing,
+                    'conversation_id': conversation_id
+                }, room=room_name, include_self=False)
+
         print(f"User {sender_id} {'is' if is_typing else 'stopped'} typing")
     
     @socketio.on('message_read')
@@ -251,19 +326,16 @@ def register_socket_handlers(socketio):
         message_ids = data.get('message_ids', [])
         user_id = data.get('user_id')
         conversation_id = data.get('conversation_id')
-        
+
         if not message_ids or not user_id or not conversation_id:
             return
-        
-        # TODO: Update read status in database
-        # For now, just broadcast to other participants
-        
+
         emit('messages_read', {
             'message_ids': message_ids,
             'reader_id': user_id,
             'read_at': datetime.utcnow().isoformat()
         }, room=str(conversation_id), include_self=False)
-        
+
         print(f"User {user_id} read {len(message_ids)} messages in conversation {conversation_id}")
     
     @socketio.on('presence_update')
@@ -289,39 +361,36 @@ def register_socket_handlers(socketio):
     @socketio.on('mark_yaps_seen')
     def handle_mark_yaps_seen(data):
         """Mark yaps as seen for the authenticated user"""
-        auth_token = data.get('token')
-        user_id = authenticate_socket(auth_token)
-        
+        user_id = session.get('user_id')
+
         if not user_id:
             emit('error', {'message': 'Authentication required'})
             return
-        
+
         mark_yaps_as_seen(user_id)
         print(f"User {user_id} marked yaps as seen")
     
     @socketio.on('mark_friend_requests_seen')
     def handle_mark_friend_requests_seen(data):
         """Mark friend requests as seen for the authenticated user"""
-        auth_token = data.get('token')
-        user_id = authenticate_socket(auth_token)
-        
+        user_id = session.get('user_id')
+
         if not user_id:
             emit('error', {'message': 'Authentication required'})
             return
-        
+
         mark_friend_requests_as_seen(user_id)
         print(f"User {user_id} marked friend requests as seen")
     
     @socketio.on('get_notification_counts')
     def handle_get_notification_counts(data):
         """Get current notification counts for the authenticated user"""
-        auth_token = data.get('token')
-        user_id = authenticate_socket(auth_token)
-        
+        user_id = session.get('user_id')
+
         if not user_id:
             emit('error', {'message': 'Authentication required'})
             return
-        
+
         send_notification_counts(user_id)
         send_yap_counts(user_id)
         print(f"Sent notification counts to user {user_id}")
@@ -346,6 +415,12 @@ def register_socket_handlers(socketio):
             
             del user_rooms[session_id]
             leave_room(f'user_{user_id}')
+
+            for room_name in list(conversation_memberships.get(session_id, set())):
+                leave_room(room_name)
+            conversation_memberships.pop(session_id, None)
+
+            heartbeat_timestamps.pop(session_id, None)
             
             # Update backwards compatibility dict
             if user_id in user_connections and user_connections[user_id] == session_id:
@@ -596,30 +671,24 @@ def mark_yaps_as_seen(user_id):
     except Exception as e:
         print(f"Error marking yaps as seen for user {user_id}: {e}")
 
-def notify_friend_request_response(requester_id, recipient_id, action, friendship_id):
+def notify_friend_request_response(requester_id, recipient_id, action, friendship_id, friend_payload=None):
     """Send real-time notification when a friend request is accepted/declined"""
     try:
-        if action not in ['accepted', 'declined'] or not socketio_instance:
+        if action not in ['accepted', 'declined', 'removed'] or not socketio_instance:
             return
             
         recipient = Users.query.get(recipient_id)
         if not recipient:
             return
         
-        # Notify the original requester
-        socketio_instance.emit('friend_request_response', {
+        payload = {
             'action': action,
             'friendship_id': friendship_id,
-            'recipient': {
-                'id': recipient.id,
-                'username': recipient.username,
-                'first_name': recipient.first_name,
-                'last_name': recipient.last_name,
-                'avatar': recipient.avatar,
-                'display_name': recipient.display_name or f"{recipient.first_name} {recipient.last_name}"
-            },
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=f'user_{requester_id}')
+            'timestamp': datetime.utcnow().isoformat(),
+            'friend': friend_payload
+        }
+
+        socketio_instance.emit('friend_request_response', payload, room=f'user_{requester_id}')
         
         print(f"Sent friend request {action} notification to user {requester_id}")
         

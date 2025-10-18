@@ -1,4 +1,5 @@
 from models import db, Users, Friendship, Conversation, Message
+from models_blocking import UserActivity, BlockedUser
 from flask import request, jsonify, Blueprint
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import or_, and_, func
@@ -26,23 +27,38 @@ def get_friends():
     
     friends = []
     for friendship in friendships:
-        # Get the friend (the other user in the relationship)
         friend_id = friendship.addressee_id if friendship.requester_id == current_user_id else friendship.requester_id
         friend = Users.query.get(friend_id)
-        
-        if friend:
-            friends.append({
-                'id': friend.id,
-                'username': friend.username,
-                'first_name': friend.first_name,
-                'last_name': friend.last_name,
-                'avatar': friend.avatar,
-                'display_name': friend.display_name or f"{friend.first_name} {friend.last_name}",
-                'is_online': False,  # You can implement online status tracking
-                'friendship_id': friendship.id,
-                'since': friendship.updated_at.isoformat()
-            })
-    
+
+        if not friend:
+            continue
+
+        activity = UserActivity.query.filter_by(user_id=friend.id).first()
+        is_online = bool(activity and activity.is_online)
+        last_seen = activity.last_seen.isoformat() if activity and activity.last_seen else None
+
+        conversation = Conversation.query.filter(
+            or_(
+                and_(Conversation.user1_id == current_user_id, Conversation.user2_id == friend.id),
+                and_(Conversation.user1_id == friend.id, Conversation.user2_id == current_user_id)
+            )
+        ).first()
+
+        friends.append({
+            'id': friend.id,
+            'username': friend.username,
+            'first_name': friend.first_name,
+            'last_name': friend.last_name,
+            'avatar': friend.avatar,
+            'display_name': friend.display_name or f"{friend.first_name} {friend.last_name}",
+            'is_online': is_online,
+            'last_seen': last_seen,
+            'is_close_friend': friendship.is_close_friend,
+            'friendship_id': friendship.id,
+            'since': friendship.updated_at.isoformat(),
+            'conversation_id': conversation.id if conversation else None
+        })
+
     return jsonify({'friends': friends}), 200
 
 @friends_bp.route('/friends/pending', methods=['GET'])
@@ -98,7 +114,8 @@ def get_pending_friend_requests():
             })
     
     return jsonify({
-        'received': received,
+        'pending_requests': received,  # Client expects pending_requests
+        'received': received,  # Keep for backward compatibility
         'sent': sent
     }), 200
 
@@ -172,9 +189,34 @@ def accept_friend_request(request_id):
     friendship.status = 'accepted'
     friendship.updated_at = datetime.utcnow()
     db.session.commit()
-    
-    # Send real-time notification to the requester
-    notify_friend_request_response(friendship.requester_id, current_user_id, 'accepted', friendship.id)
+
+    requester = Users.query.get(friendship.requester_id)
+    addressee = Users.query.get(current_user_id)
+
+    if requester and addressee:
+        payload = {
+            'id': addressee.id,
+            'username': addressee.username,
+            'first_name': addressee.first_name,
+            'last_name': addressee.last_name,
+            'avatar': addressee.avatar,
+            'display_name': addressee.display_name or f"{addressee.first_name} {addressee.last_name}",
+            'is_online': True,
+            'friendship_id': friendship.id,
+            'conversation_id': None,
+        }
+        notify_friend_request_response(friendship.requester_id, current_user_id, 'accepted', friendship.id, payload)
+        notify_friend_request_response(current_user_id, friendship.requester_id, 'accepted', friendship.id, {
+            'id': requester.id,
+            'username': requester.username,
+            'first_name': requester.first_name,
+            'last_name': requester.last_name,
+            'avatar': requester.avatar,
+            'display_name': requester.display_name or f"{requester.first_name} {requester.last_name}",
+            'is_online': True,
+            'friendship_id': friendship.id,
+            'conversation_id': None,
+        })
     
     return jsonify({'message': 'Friend request accepted'}), 200
 
@@ -196,10 +238,10 @@ def decline_friend_request(request_id):
     friendship.status = 'declined'
     friendship.updated_at = datetime.utcnow()
     db.session.commit()
-    
-    # Send real-time notification to the requester
+
     notify_friend_request_response(friendship.requester_id, current_user_id, 'declined', friendship.id)
-    
+    notify_friend_request_response(current_user_id, friendship.requester_id, 'declined', friendship.id)
+
     return jsonify({'message': 'Friend request declined'}), 200
 
 @friends_bp.route('/friends/<int:friend_id>/remove', methods=['DELETE'])
@@ -207,7 +249,7 @@ def decline_friend_request(request_id):
 def remove_friend(friend_id):
     """Remove a friend"""
     current_user_id = get_jwt_identity()
-    
+
     friendship = Friendship.query.filter(
         and_(
             or_(
@@ -217,14 +259,96 @@ def remove_friend(friend_id):
             Friendship.status == 'accepted'
         )
     ).first()
-    
+
     if not friendship:
         return jsonify({'error': 'Friendship not found'}), 404
-    
+
     db.session.delete(friendship)
     db.session.commit()
-    
+
+    notify_friend_request_response(friend_id, current_user_id, 'removed', friendship.id)
+    notify_friend_request_response(current_user_id, friend_id, 'removed', friendship.id)
+
     return jsonify({'message': 'Friend removed successfully'}), 200
+
+
+@friends_bp.route('/friends/<int:friend_id>/close', methods=['POST'])
+@jwt_required()
+def toggle_close_friend(friend_id):
+    """Toggle close friend status"""
+    current_user_id = get_jwt_identity()
+    data = request.get_json() or {}
+    is_close = bool(data.get('is_close', True))
+
+    friendship = Friendship.query.filter(
+        and_(
+            or_(
+                and_(Friendship.requester_id == current_user_id, Friendship.addressee_id == friend_id),
+                and_(Friendship.requester_id == friend_id, Friendship.addressee_id == current_user_id)
+            ),
+            Friendship.status == 'accepted'
+        )
+    ).first()
+
+    if not friendship:
+        return jsonify({'error': 'Friendship not found'}), 404
+
+    friendship.is_close_friend = is_close
+    friendship.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({'message': 'Close friend status updated', 'is_close_friend': friendship.is_close_friend}), 200
+
+
+@friends_bp.route('/friends/<int:friend_id>/block', methods=['POST'])
+@jwt_required()
+def block_friend(friend_id):
+    """Block a user and remove existing friendship."""
+    current_user_id = get_jwt_identity()
+
+    if friend_id == current_user_id:
+        return jsonify({'error': 'Cannot block yourself'}), 400
+
+    target_user = Users.query.get(friend_id)
+    if not target_user:
+        return jsonify({'error': 'User not found'}), 404
+
+    existing_block = BlockedUser.query.filter_by(blocker_id=current_user_id, blocked_id=friend_id).first()
+    if existing_block:
+        return jsonify({'message': 'User already blocked'}), 200
+
+    block = BlockedUser(blocker_id=current_user_id, blocked_id=friend_id)
+    db.session.add(block)
+
+    friendship = Friendship.query.filter(
+        or_(
+            and_(Friendship.requester_id == current_user_id, Friendship.addressee_id == friend_id),
+            and_(Friendship.requester_id == friend_id, Friendship.addressee_id == current_user_id)
+        )
+    ).first()
+    if friendship:
+        db.session.delete(friendship)
+
+    db.session.commit()
+
+    return jsonify({'message': 'User blocked successfully'}), 200
+
+
+@friends_bp.route('/friends/<int:friend_id>/unblock', methods=['POST'])
+@jwt_required()
+def unblock_friend(friend_id):
+    """Unblock a previously blocked user."""
+    current_user_id = get_jwt_identity()
+
+    block = BlockedUser.query.filter_by(blocker_id=current_user_id, blocked_id=friend_id).first()
+
+    if not block:
+        return jsonify({'error': 'User is not blocked'}), 404
+
+    db.session.delete(block)
+    db.session.commit()
+
+    return jsonify({'message': 'User unblocked successfully'}), 200
 
 @friends_bp.route('/conversations', methods=['GET'])
 @jwt_required()
@@ -250,6 +374,20 @@ def get_conversations():
             conversation_id=conv.id
         ).order_by(Message.timestamp.desc()).first()
         
+        activity = UserActivity.query.filter_by(user_id=other_user.id).first()
+        is_online = bool(activity and activity.is_online)
+        last_seen = activity.last_seen.isoformat() if activity and activity.last_seen else None
+
+        friendship = Friendship.query.filter(
+            and_(
+                or_(
+                    and_(Friendship.requester_id == current_user_id, Friendship.addressee_id == other_user.id),
+                    and_(Friendship.requester_id == other_user.id, Friendship.addressee_id == current_user_id)
+                ),
+                Friendship.status == 'accepted'
+            )
+        ).first()
+
         conversations_data.append({
             'conversation_id': conv.id,
             'friend': {
@@ -258,7 +396,10 @@ def get_conversations():
                 'first_name': other_user.first_name,
                 'last_name': other_user.last_name,
                 'avatar': other_user.avatar,
-                'is_online': False  # Implement online status
+                'is_online': is_online,
+                'last_seen': last_seen,
+                'is_close_friend': friendship.is_close_friend if friendship else False,
+                'friendship_id': friendship.id if friendship else None,
             },
             'last_message': {
                 'content': last_message.encrypted_content if last_message else None,

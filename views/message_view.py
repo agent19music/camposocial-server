@@ -1,10 +1,73 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Message, Conversation, Users, Reaction
+from models import db, Message, Conversation, Users, Reaction, MessageMedia, Friendship
+from models_blocking import UserActivity
 from sqlalchemy import or_, and_, desc
 from datetime import datetime
 import json
-from websocket_handlers import notify_new_message, socketio_instance
+from websocket_handlers import socketio_instance
+
+
+def _ensure_conversation(current_user_id: int, other_user_id: int) -> Conversation:
+    """Fetch or create a deterministic conversation between two users."""
+    if current_user_id == other_user_id:
+        raise ValueError("Cannot start conversation with yourself")
+
+    user_low, user_high = sorted([current_user_id, other_user_id])
+
+    conversation = Conversation.query.filter(
+        and_(
+            Conversation.user1_id == user_low,
+            Conversation.user2_id == user_high
+        )
+    ).first()
+
+    if not conversation:
+        conversation = Conversation(user1_id=user_low, user2_id=user_high)
+        db.session.add(conversation)
+        db.session.flush()
+
+    return conversation
+
+
+def _serialize_message(message: Message, current_user_id: int) -> dict:
+    sender = Users.query.get(message.user_id)
+    media_payload = [
+        {
+            'id': media.id,
+            'file_id': media.file_id,
+            'url': media.url,
+            'type': media.media_type,
+            'metadata': media.file_metadata or {}
+        }
+        for media in message.media_items
+    ]
+
+    reaction_payload = [
+        {
+            'user_id': reaction.user_id,
+            'reaction_type': reaction.reaction_type,
+            'timestamp': reaction.timestamp.isoformat(),
+        }
+        for reaction in message.reactions
+    ]
+
+    return {
+        'id': message.id,
+        'conversation_id': message.conversation_id,
+        'sender_id': message.user_id,
+        'sender_username': sender.username if sender else None,
+        'sender_avatar': sender.avatar if sender else None,
+        'content': None if message.is_encrypted else message.encrypted_content,
+        'ciphertext': message.encrypted_content,
+        'media': media_payload,
+        'reply_to': message.reply_to_id,
+        'encrypted': message.is_encrypted,
+        'timestamp': message.timestamp.isoformat(),
+        'is_read': bool(message.read_at),
+        'is_own': message.user_id == current_user_id,
+        'reactions': reaction_payload,
+    }
 
 message_bp = Blueprint('message_bp', __name__)
 
@@ -14,81 +77,104 @@ def send_message():
     """Send a message with real-time delivery"""
     try:
         current_user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        recipient_id = data.get('recipient_id')
-        content = data.get('content')
-        conversation_id = data.get('conversation_id')
-        reply_to = data.get('reply_to')
-        media = data.get('media', [])
-        encrypted = data.get('encrypted', False)
-        
-        if not recipient_id or not content:
-            return jsonify({'error': 'Missing required fields'}), 400
-        
-        # Find or create conversation
-        conversation = Conversation.query.filter(
-            or_(
-                and_(Conversation.user1_id == current_user_id, Conversation.user2_id == recipient_id),
-                and_(Conversation.user1_id == recipient_id, Conversation.user2_id == current_user_id)
-            )
-        ).first()
-        
-        if not conversation:
-            conversation = Conversation(
-                user1_id=min(current_user_id, recipient_id),
-                user2_id=max(current_user_id, recipient_id)
-            )
-            db.session.add(conversation)
-            db.session.flush()
-        
-        # Update conversation timestamp
+        payload = request.get_json() or {}
+
+        recipient_id = payload.get('recipient_id')
+        raw_content = payload.get('content')
+        encrypted_flag = bool(payload.get('encrypted', False))
+        provided_conversation_id = payload.get('conversation_id')
+        reply_to = payload.get('reply_to')
+        media_payload = payload.get('media', [])
+
+        if not recipient_id:
+            return jsonify({'error': 'recipient_id is required'}), 400
+
+        if not raw_content:
+            return jsonify({'error': 'content is required'}), 400
+
+        if int(recipient_id) == current_user_id:
+            return jsonify({'error': 'Cannot message yourself'}), 400
+
+        # Ensure conversation exists (either via provided id or deterministic lookup)
+        if provided_conversation_id:
+            conversation = Conversation.query.filter(
+                and_(
+                    Conversation.id == provided_conversation_id,
+                    or_(
+                        Conversation.user1_id == current_user_id,
+                        Conversation.user2_id == current_user_id
+                    )
+                )
+            ).first()
+            if not conversation:
+                return jsonify({'error': 'Conversation not found or access denied'}), 404
+            other_user_id = conversation.get_other_user(current_user_id).id
+        else:
+            other_user_id = int(recipient_id)
+            conversation = _ensure_conversation(current_user_id, other_user_id)
+
         conversation.updated_at = datetime.utcnow()
-        
-        # Create message
+
         message = Message(
-            encrypted_content=content,
+            encrypted_content=raw_content,
             user_id=current_user_id,
             conversation_id=conversation.id,
-            reply_to_id=reply_to
+            reply_to_id=reply_to,
+            is_encrypted=encrypted_flag,
         )
-        
+
         db.session.add(message)
+        db.session.flush()
+
+        attachments = []
+        for media_item in media_payload:
+            if not isinstance(media_item, dict):
+                continue
+            file_id = media_item.get('file_id') or media_item.get('id')
+            url = media_item.get('url')
+            media_type = media_item.get('type')
+            meta = media_item.get('metadata')
+
+            if not (file_id and url and media_type):
+                continue
+
+            media_model = MessageMedia(
+                message_id=message.id,
+                file_id=str(file_id),
+                url=url,
+                media_type=media_type,
+                file_metadata=meta if isinstance(meta, dict) else None,
+            )
+            db.session.add(media_model)
+            attachments.append(media_model)
+
         db.session.commit()
-        
-        # Get sender info for real-time notification
-        sender = Users.query.get(current_user_id)
-        
-        # Prepare message data for real-time delivery
-        message_data = {
-            'id': message.id,
-            'conversation_id': conversation.id,
-            'sender_id': current_user_id,
-            'sender_username': sender.username,
-            'sender_avatar': sender.avatar,
-            'content': content,
-            'media': media,
-            'reply_to': reply_to,
-            'encrypted': encrypted,
-            'timestamp': message.timestamp.isoformat(),
-            'is_read': False
-        }
-        
-        # Send real-time notification to recipient
+
+        serialized = _serialize_message(message, current_user_id)
+
+        preview = '[Encrypted message]' if encrypted_flag else raw_content[:100] + '...' if len(raw_content) > 100 else raw_content
+        conversation.last_message_preview = preview
+        conversation.last_message_id = message.id
+        db.session.commit()
+
+        # CRITICAL FIX: Send real-time notification to CONVERSATION ROOM (not user rooms)
+        # This ensures both sender and recipient receive the message if they're in the conversation
         if socketio_instance:
-            socketio_instance.emit('new_message', message_data, room=f'user_{recipient_id}')
-            
-            # Also emit to sender for confirmation
-            socketio_instance.emit('message_sent', {
-                'message_id': message.id,
+            # Emit to conversation room - all participants will receive
+            socketio_instance.emit('new_message', serialized, room=str(conversation.id))
+
+            socketio_instance.emit('message_delivered', {
                 'conversation_id': conversation.id,
-                'timestamp': message.timestamp.isoformat()
+                'message_id': message.id,
+                'delivered_at': datetime.utcnow().isoformat()
             }, room=f'user_{current_user_id}')
-        
+            print(f"✅ Message {message.id} emitted to conversation room {conversation.id}")
+
         return jsonify({
             'message': 'Message sent successfully',
             'message_id': message.id,
-            'message_data': message_data
+            'conversation_id': conversation.id,
+            'message_data': serialized,
         }), 201
         
     except Exception as e:
@@ -107,41 +193,24 @@ def get_messages(conversation_id):
         if not conversation or (conversation.user1_id != current_user_id and conversation.user2_id != current_user_id):
             return jsonify({'error': 'Conversation not found'}), 404
         
-        # Get messages with pagination
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 50, type=int)
-        
-        messages = Message.query.filter_by(conversation_id=conversation.id)\
-            .order_by(desc(Message.timestamp))\
-            .paginate(page=page, per_page=per_page, error_out=False)
-        
-        # Format messages
-        formatted_messages = []
-        for message in messages.items:
-            sender = Users.query.get(message.user_id)
-            formatted_messages.append({
-                'id': message.id,
-                'sender_id': message.user_id,
-                'sender_username': sender.username,
-                'sender_avatar': sender.avatar,
-                'content': message.encrypted_content,
-                'media': [],  # Add media support later
-                'reply_to': message.reply_to_id,
-                'encrypted': True,
-                'timestamp': message.timestamp.isoformat(),
-                'is_read': False  # Add read status later
-            })
-        
+        limit = request.args.get('limit', 50, type=int)
+        before_id = request.args.get('before', type=int)
+
+        query = Message.query.filter_by(conversation_id=conversation.id).order_by(desc(Message.timestamp))
+
+        if before_id:
+            pivot_message = Message.query.get(before_id)
+            if pivot_message and pivot_message.conversation_id == conversation.id:
+                query = query.filter(Message.timestamp < pivot_message.timestamp)
+
+        messages = query.limit(limit).all()
+
+        serialized = [_serialize_message(message, current_user_id) for message in messages]
+
         return jsonify({
-            'messages': formatted_messages,
-            'pagination': {
-                'page': messages.page,
-                'pages': messages.pages,
-                'per_page': messages.per_page,
-                'total': messages.total,
-                'has_next': messages.has_next,
-                'has_prev': messages.has_prev
-            }
+            'messages': serialized,
+            'count': len(serialized),
+            'conversation_id': conversation.id,
         }), 200
         
     except Exception as e:
@@ -150,56 +219,106 @@ def get_messages(conversation_id):
 @message_bp.route('/conversations', methods=['GET'])
 @jwt_required()
 def get_conversations():
-    """Get user's conversations with last message"""
+    """Get user's conversation summaries"""
     try:
         current_user_id = get_jwt_identity()
-        
+
         conversations = Conversation.query.filter(
             or_(
                 Conversation.user1_id == current_user_id,
                 Conversation.user2_id == current_user_id
             )
-        ).all()
-        
-        formatted_conversations = []
+        ).order_by(desc(Conversation.updated_at)).all()
+
+        summaries = []
         for conv in conversations:
-            # Get the other user
-            other_user_id = conv.user2_id if conv.user1_id == current_user_id else conv.user1_id
-            other_user = Users.query.get(other_user_id)
-            
-            # Get last message
-            last_message = Message.query.filter_by(conversation_id=conv.id)\
-                .order_by(desc(Message.timestamp)).first()
-            
-            # Get unread count (placeholder for now)
-            unread_count = 0  # Implement read tracking later
-            
-            conversation_data = {
+            other_user = conv.get_other_user(current_user_id)
+            if not other_user:
+                continue
+
+            last_message = Message.query.filter_by(conversation_id=conv.id).order_by(desc(Message.timestamp)).first()
+            activity = UserActivity.query.filter_by(user_id=other_user.id).first()
+            friendship = Friendship.query.filter(
+                and_(
+                    or_(
+                        and_(Friendship.requester_id == current_user_id, Friendship.addressee_id == other_user.id),
+                        and_(Friendship.requester_id == other_user.id, Friendship.addressee_id == current_user_id)
+                    ),
+                    Friendship.status == 'accepted'
+                )
+            ).first()
+
+            summaries.append({
                 'conversation_id': conv.id,
-                'other_user': {
+                'friend': {
                     'id': other_user.id,
                     'username': other_user.username,
                     'display_name': other_user.display_name or f"{other_user.first_name} {other_user.last_name}",
-                    'avatar': other_user.avatar
+                    'first_name': other_user.first_name,
+                    'last_name': other_user.last_name,
+                    'avatar': other_user.avatar,
+                    'is_online': bool(activity and activity.is_online),
+                    'last_seen': activity.last_seen.isoformat() if activity and activity.last_seen else None,
+                    'is_close_friend': friendship.is_close_friend if friendship else False,
+                    'friendship_id': friendship.id if friendship else None,
                 },
                 'last_message': {
+                    'id': last_message.id if last_message else None,
                     'content': last_message.encrypted_content if last_message else None,
                     'sender_id': last_message.user_id if last_message else None,
-                    'timestamp': last_message.timestamp.isoformat() if last_message else None
+                    'timestamp': last_message.timestamp.isoformat() if last_message else None,
                 } if last_message else None,
-                'unread_count': unread_count,
-                'updated_at': conv.updated_at.isoformat()
-            }
-            
-            formatted_conversations.append(conversation_data)
-        
-        # Sort by last activity
-        formatted_conversations.sort(key=lambda x: x['updated_at'], reverse=True)
-        
-        return jsonify({'conversations': formatted_conversations}), 200
-        
+                'unread_count': 0,
+                'updated_at': conv.updated_at.isoformat(),
+            })
+
+        return jsonify({'conversations': summaries}), 200
+
     except Exception as e:
         return jsonify({'error': f'Failed to get conversations: {str(e)}'}), 500
+
+
+@message_bp.route('/conversations/with/<int:friend_id>', methods=['POST'])
+@jwt_required()
+def ensure_conversation(friend_id: int):
+    """Create or fetch conversation with friend_id and return metadata."""
+    current_user_id = get_jwt_identity()
+
+    if current_user_id == friend_id:
+        return jsonify({'error': 'Cannot create conversation with yourself'}), 400
+
+    conversation = _ensure_conversation(current_user_id, friend_id)
+    conversation.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    other_user = Users.query.get(friend_id)
+    activity = UserActivity.query.filter_by(user_id=friend_id).first()
+    friendship = Friendship.query.filter(
+        and_(
+            or_(
+                and_(Friendship.requester_id == current_user_id, Friendship.addressee_id == friend_id),
+                and_(Friendship.requester_id == friend_id, Friendship.addressee_id == current_user_id)
+            ),
+            Friendship.status == 'accepted'
+        )
+    ).first()
+
+    return jsonify({
+        'conversation_id': conversation.id,
+        'friend': {
+            'id': other_user.id,
+            'username': other_user.username,
+            'display_name': other_user.display_name or f"{other_user.first_name} {other_user.last_name}",
+            'first_name': other_user.first_name,
+            'last_name': other_user.last_name,
+            'avatar': other_user.avatar,
+        },
+        'is_online': bool(activity and activity.is_online),
+        'last_seen': activity.last_seen.isoformat() if activity and activity.last_seen else None,
+        'is_close_friend': bool(friendship and friendship.is_close_friend),
+        'friendship_id': friendship.id if friendship else None,
+        'updated_at': conversation.updated_at.isoformat(),
+    }), 200
 
 @message_bp.route('/messages/<int:message_id>/reactions', methods=['POST'])
 @jwt_required()
@@ -238,13 +357,15 @@ def add_reaction(message_id):
     
     # Emit reaction update via WebSocket
     try:
-        from app import socketio
-        socketio.emit('reaction_added', {
+        payload = {
             'message_id': message_id,
             'user_id': current_user_id,
-            'reaction_type': reaction_type
-        }, room=str(message.conversation_id))
-    except ImportError:
+            'reaction_type': reaction_type,
+            'conversation_id': message.conversation_id,
+        }
+        if socketio_instance:
+            socketio_instance.emit('reaction_added', payload, room=str(message.conversation_id))
+    except Exception:
         pass
     
     return jsonify({'success': True}), 200
@@ -268,12 +389,12 @@ def delete_message(message_id):
     
     # Emit deletion via WebSocket
     try:
-        from app import socketio
-        socketio.emit('message_deleted', {
-            'message_id': message_id,
-            'conversation_id': message.conversation_id
-        }, room=str(message.conversation_id))
-    except ImportError:
+        if socketio_instance:
+            socketio_instance.emit('message_deleted', {
+                'message_id': message_id,
+                'conversation_id': message.conversation_id
+            }, room=str(message.conversation_id))
+    except Exception:
         pass
     
     return jsonify({'success': True}), 200
@@ -308,13 +429,13 @@ def edit_message(message_id):
     
     # Emit edit via WebSocket
     try:
-        from app import socketio
-        socketio.emit('message_edited', {
-            'message_id': message_id,
-            'new_content': new_content,
-            'conversation_id': message.conversation_id
-        }, room=str(message.conversation_id))
-    except ImportError:
+        if socketio_instance:
+            socketio_instance.emit('message_edited', {
+                'message_id': message_id,
+                'new_content': new_content,
+                'conversation_id': message.conversation_id
+            }, room=str(message.conversation_id))
+    except Exception:
         pass
     
     return jsonify({'success': True}), 200

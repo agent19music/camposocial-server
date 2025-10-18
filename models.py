@@ -178,6 +178,19 @@ class Message(db.Model):
     # Relationships
     conversation = db.relationship('Conversation', backref='messages')
     reactions = db.relationship('Reaction', backref='message', lazy=True)
+    media_items = db.relationship('MessageMedia', backref='message', lazy=True, cascade='all, delete-orphan')
+
+
+class MessageMedia(db.Model):
+    __tablename__ = 'message_media'
+
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=False)
+    file_id = db.Column(db.String(64), nullable=False)
+    url = db.Column(db.String(512), nullable=False)
+    media_type = db.Column(db.String(20), nullable=False)  # image, video, document, audio
+    file_metadata = db.Column(db.JSON, nullable=True)  # Renamed from 'metadata' (reserved by SQLAlchemy)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 class Reaction(db.Model):
     __tablename__ = 'reactions'
@@ -707,6 +720,7 @@ class Friendship(db.Model):
     status = db.Column(db.String(20), nullable=False, default='pending')  # 'pending', 'accepted', 'declined', 'blocked'
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_close_friend = db.Column(db.Boolean, nullable=False, default=False)
     
     # Relationships to Users
     requester = db.relationship('Users', foreign_keys=[requester_id], backref='sent_friend_requests')
@@ -730,6 +744,13 @@ class Conversation(db.Model):
     user2_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # New metadata fields for better UX
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    is_pinned_by_user1 = db.Column(db.Boolean, default=False, nullable=False)
+    is_pinned_by_user2 = db.Column(db.Boolean, default=False, nullable=False)
+    last_message_id = db.Column(db.Integer, nullable=True)
+    last_message_preview = db.Column(db.String(200), nullable=True)
     
     # Relationships
     user1 = db.relationship('Users', foreign_keys=[user1_id])
@@ -1158,3 +1179,21 @@ class BadgeTransaction(db.Model):
     
     # Error tracking
     error_message = db.Column(db.Text, nullable=True)
+
+
+# ============================================================================
+# Database Indexes for Performance Optimization
+# ============================================================================
+
+# Index for message queries (fetching messages by conversation, ordered by time)
+db.Index('idx_messages_conversation_timestamp', Message.conversation_id, Message.timestamp.desc())
+
+# Index for friendship queries (finding friends and requests)
+db.Index('idx_friendship_users_status', Friendship.requester_id, Friendship.addressee_id, Friendship.status)
+
+# Index for conversation lookups (finding conversations between two users)
+db.Index('idx_conversation_users', Conversation.user1_id, Conversation.user2_id)
+
+# Index for user activity queries (checking online status)
+# Note: UserActivity is in models_blocking.py but we reference it here for completeness
+# This index should be added to models_blocking.py if needed

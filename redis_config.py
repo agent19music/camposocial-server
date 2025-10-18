@@ -23,6 +23,7 @@ def get_redis_client():
         host=redis_host,
         port=redis_port,
         db=redis_db,
+        password=os.getenv('REDIS_PASSWORD'),
         decode_responses=True,  # Automatically decode responses to strings
         max_connections=50,
         socket_connect_timeout=5,
@@ -41,11 +42,28 @@ def test_redis_connection():
     try:
         client = get_redis_client()
         client.ping()
+        client.close()
         return True, "Redis connection successful"
     except redis.ConnectionError as e:
         return False, f"Redis connection failed: {str(e)}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+
+def get_redis_url():
+    """Build a Redis URL from environment variables."""
+    if os.getenv('REDIS_URL'):
+        return os.getenv('REDIS_URL')
+
+    host = os.getenv('REDIS_HOST', 'localhost')
+    port = int(os.getenv('REDIS_PORT', 6379))
+    db = int(os.getenv('REDIS_DB', 0))
+    password = os.getenv('REDIS_PASSWORD')
+
+    if password:
+        return f"redis://:{password}@{host}:{port}/{db}"
+
+    return f"redis://{host}:{port}/{db}"
 
 # Example cache decorators
 def cache_key_wrapper(prefix=""):
