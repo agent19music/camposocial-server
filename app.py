@@ -38,26 +38,100 @@ def create_app():
     migrate = Migrate(app, db)
     
     # Configure CORS with multiple allowed origins
-    allowed_origins = [
+    def _normalize_origin(origin: str | None) -> str | None:
+        if not origin:
+            return None
+        origin = origin.strip()
+        if not origin:
+            return None
+        return origin.rstrip('/')
+
+    allowed_origins = {
         'http://localhost:3000',
+        'http://127.0.0.1:3000',
         'http://localhost:8888',
+        'http://127.0.0.1:8888',
         'https://camposocial.vercel.app',
         'https://seller.camposocial.app',
-    ]
-    
-    # Add any additional origins from environment variable
-    frontend_url = os.getenv('FRONTEND_URL')
-    if frontend_url and frontend_url not in allowed_origins:
-        allowed_origins.append(frontend_url)
+    }
 
-    seller_dash_url = os.getenv('SELLER_DASHBOARD_URL')
-    if seller_dash_url and seller_dash_url not in allowed_origins:
-        allowed_origins.append(seller_dash_url)
-    
-    CORS(app,
-         origins=allowed_origins,
-         allow_headers=['Content-Type', 'Authorization'],
-         supports_credentials=True)
+    # Load additional origins from environment variables
+    for env_var in ('FRONTEND_URL', 'SELLER_DASHBOARD_URL', 'CORS_ALLOWED_ORIGINS'):
+        value = os.getenv(env_var)
+        if not value:
+            continue
+        if env_var == 'CORS_ALLOWED_ORIGINS':
+            candidates = [item for item in value.split(',')]
+        else:
+            candidates = [value]
+        for candidate in candidates:
+            normalized = _normalize_origin(candidate)
+            if normalized:
+                allowed_origins.add(normalized)
+
+                # Add localhost equivalent if 127.0.0.1 is used (and vice versa)
+                if '127.0.0.1' in normalized:
+                    allowed_origins.add(normalized.replace('127.0.0.1', 'localhost'))
+                elif 'localhost' in normalized:
+                    allowed_origins.add(normalized.replace('localhost', '127.0.0.1'))
+
+    allowed_origins = sorted(allowed_origins)
+
+    cors_resources = {
+        r"/camposocial/api/*": {
+            "origins": allowed_origins
+        },
+        r"/socket.io/*": {
+            "origins": allowed_origins
+        },
+        r"/docs*": {
+            "origins": allowed_origins
+        },
+        r"/api-explorer*": {
+            "origins": allowed_origins
+        },
+        r"/*": {
+            "origins": allowed_origins
+        },
+    }
+
+    allowed_headers = [
+        'Content-Type',
+        'content-type',
+        'Authorization',
+        'authorization',
+        'X-Requested-With',
+        'Accept',
+        'accept',
+        'Origin',
+        'origin',
+    ]
+
+    CORS(
+        app,
+        resources=cors_resources,
+        supports_credentials=True,
+        allow_headers=allowed_headers,
+        methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        expose_headers=['Content-Type', 'Authorization']
+    )
+
+    @app.after_request
+    def apply_cors_headers(response):
+        origin = _normalize_origin(request.headers.get('Origin'))
+        if origin and origin in allowed_origins:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = response.headers.get('Vary', '') + (', ' if response.headers.get('Vary') else '') + 'Origin'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers.setdefault(
+                'Access-Control-Allow-Headers',
+                ', '.join(sorted(set(allowed_headers)))
+            )
+            response.headers.setdefault(
+                'Access-Control-Allow-Methods',
+                'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+            )
+        return response
     
     # Initialize SocketIO with proper configuration
     socketio = SocketIO(

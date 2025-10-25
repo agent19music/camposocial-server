@@ -2,7 +2,7 @@ from flask_socketio import emit, join_room, leave_room, disconnect
 from flask_jwt_extended import decode_token
 from flask import request, session
 from datetime import datetime
-from models import db, Users, Friendship, Conversation, EnhancedNotification, Yap, Message
+from models import db, Users, Friendship, Conversation, EnhancedNotification, Yap, Message, OfflineNotification
 from models_blocking import UserActivity
 from sqlalchemy import or_, and_
 import json
@@ -209,6 +209,11 @@ def register_socket_handlers(socketio):
                 send_yap_counts(user_id)
             except Exception as e:
                 print(f"⚠️ Failed to send yap counts: {e}")
+
+            try:
+                deliver_offline_notifications(user_id)
+            except Exception as e:
+                print(f"⚠️ Failed to deliver offline notifications for user {user_id}: {e}")
 
             # Notify friends of online status
             notify_friends_status_change(user_id, True)
@@ -464,6 +469,48 @@ def emit_to_user(user_id, event, data):
         # User might be offline, could queue the message
         print(f"User {user_id} is not connected")
 
+
+def emit_to_user_room(user_id, event, payload):
+    if not socketio_instance:
+        return False
+
+    if user_id in active_users:
+        socketio_instance.emit(event, payload, room=f'user_{user_id}')
+        return True
+
+    return False
+
+
+def queue_offline_notification(recipient_id, notification_type, payload):
+    try:
+        record = OfflineNotification(
+            recipient_id=recipient_id,
+            type=notification_type,
+            payload=payload
+        )
+        db.session.add(record)
+        db.session.commit()
+    except Exception as exc:
+        print(f"Error queuing offline notification for user {recipient_id}: {exc}")
+        db.session.rollback()
+
+
+def deliver_offline_notifications(user_id):
+    try:
+        queued = OfflineNotification.query.filter_by(recipient_id=user_id, delivered_at=None).order_by(OfflineNotification.created_at.asc()).all()
+
+        if not queued:
+            return
+
+        for record in queued:
+            if emit_to_user_room(user_id, record.type, record.payload):
+                record.delivered_at = datetime.utcnow()
+
+        db.session.commit()
+    except Exception as exc:
+        print(f"Error delivering offline notifications to user {user_id}: {exc}")
+        db.session.rollback()
+
 def broadcast_to_conversation(conversation_id, event, data, exclude_user=None):
     """Broadcast an event to all users in a conversation"""
     room = str(conversation_id)
@@ -578,7 +625,16 @@ def send_yap_counts(user_id):
 def notify_friend_request(recipient_id, sender_id):
     """Send real-time notification for new friend request"""
     try:
+        payload = None
+
         if not socketio_instance:
+            queue_offline_notification(
+                recipient_id,
+                'friend_request',
+                {
+                    'sender_id': sender_id
+                }
+            )
             return
             
         sender = Users.query.get(sender_id)
@@ -596,7 +652,7 @@ def notify_friend_request(recipient_id, sender_id):
             return
         
         # Send simplified real-time notification
-        socketio_instance.emit('friend_request', {
+        payload = {
             'sender': {
                 'id': sender.id,
                 'username': sender.username,
@@ -607,7 +663,12 @@ def notify_friend_request(recipient_id, sender_id):
             },
             'friendship_id': friendship.id,
             'timestamp': datetime.utcnow().isoformat()
-        }, room=f'user_{recipient_id}')
+        }
+
+        delivered = emit_to_user_room(recipient_id, 'friend_request', payload)
+
+        if not delivered:
+            queue_offline_notification(recipient_id, 'friend_request', payload)
         
         print(f"Sent friend request notification to user {recipient_id} from {sender.username}")
         
@@ -674,7 +735,7 @@ def mark_yaps_as_seen(user_id):
 def notify_friend_request_response(requester_id, recipient_id, action, friendship_id, friend_payload=None):
     """Send real-time notification when a friend request is accepted/declined"""
     try:
-        if action not in ['accepted', 'declined', 'removed'] or not socketio_instance:
+        if action not in ['accepted', 'declined', 'removed']:
             return
             
         recipient = Users.query.get(recipient_id)
@@ -688,7 +749,10 @@ def notify_friend_request_response(requester_id, recipient_id, action, friendshi
             'friend': friend_payload
         }
 
-        socketio_instance.emit('friend_request_response', payload, room=f'user_{requester_id}')
+        delivered = emit_to_user_room(requester_id, 'friend_request_response', payload)
+
+        if not delivered:
+            queue_offline_notification(requester_id, 'friend_request_response', payload)
         
         print(f"Sent friend request {action} notification to user {requester_id}")
         
@@ -808,12 +872,10 @@ def notify_new_reply(yap_author_id, reply_author_id, yap_id, reply_content):
 # Enhanced notification functions
 def notify_new_message(sender_id, recipient_id, message_data):
     """Send real-time message notification"""
-    if socketio_instance and recipient_id in active_users:
-        socketio_instance.emit('new_message', {
-            'sender_id': sender_id,
-            'message': message_data,
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=f'user_{recipient_id}')
+    delivered = emit_to_user_room(recipient_id, 'new_message', message_data)
+
+    if not delivered:
+        queue_offline_notification(recipient_id, 'new_message', message_data)
 
 def get_online_users():
     """Get list of currently online users"""

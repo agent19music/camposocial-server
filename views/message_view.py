@@ -5,7 +5,7 @@ from models_blocking import UserActivity
 from sqlalchemy import or_, and_, desc
 from datetime import datetime
 import json
-from websocket_handlers import socketio_instance
+from websocket_handlers import socketio_instance, notify_new_message
 
 
 def _ensure_conversation(current_user_id: int, other_user_id: int) -> Conversation:
@@ -157,18 +157,15 @@ def send_message():
         conversation.last_message_id = message.id
         db.session.commit()
 
-        # CRITICAL FIX: Send real-time notification to CONVERSATION ROOM (not user rooms)
-        # This ensures both sender and recipient receive the message if they're in the conversation
         if socketio_instance:
-            # Emit to conversation room - all participants will receive
             socketio_instance.emit('new_message', serialized, room=str(conversation.id))
-
             socketio_instance.emit('message_delivered', {
                 'conversation_id': conversation.id,
                 'message_id': message.id,
                 'delivered_at': datetime.utcnow().isoformat()
             }, room=f'user_{current_user_id}')
-            print(f"✅ Message {message.id} emitted to conversation room {conversation.id}")
+
+        notify_new_message(current_user_id, other_user_id, serialized)
 
         return jsonify({
             'message': 'Message sent successfully',

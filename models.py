@@ -181,6 +181,19 @@ class Message(db.Model):
     media_items = db.relationship('MessageMedia', backref='message', lazy=True, cascade='all, delete-orphan')
 
 
+class OfflineNotification(db.Model):
+    __tablename__ = 'offline_notifications'
+
+    id = db.Column(db.Integer, primary_key=True)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    payload = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    delivered_at = db.Column(db.DateTime, nullable=True)
+    type = db.Column(db.String(50), nullable=False)
+
+    recipient = db.relationship('Users', backref='offline_notifications')
+
+
 class MessageMedia(db.Model):
     __tablename__ = 'message_media'
 
