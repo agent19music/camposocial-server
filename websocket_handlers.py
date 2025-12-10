@@ -758,11 +758,6 @@ def notify_friend_request_response(requester_id, recipient_id, action, friendshi
         
     except Exception as e:
         print(f"Error notifying friend request response: {e}")
-        
-        print(f"Sent friend request {action} notification to user {requester_id}")
-        
-    except Exception as e:
-        print(f"Error notifying friend request response: {e}")
 
 def get_user_pending_requests(user_id):
     """Get formatted pending requests for a user"""

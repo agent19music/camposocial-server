@@ -172,9 +172,7 @@ def create_app():
     from views.media_view import media_bp
     app.register_blueprint(media_bp, url_prefix='/camposocial/api')
     
-    # Register advanced messaging blueprint
-    from views.message_advanced_view import message_advanced_bp
-    app.register_blueprint(message_advanced_bp, url_prefix='/camposocial/api')
+    # Advanced messaging functionality is now merged into message_bp
     
     # ========== PHASE 8 BLUEPRINTS ==========
     # Register Groups management blueprint

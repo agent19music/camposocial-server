@@ -194,6 +194,33 @@ def accept_friend_request(request_id):
     addressee = Users.query.get(current_user_id)
 
     if requester and addressee:
+        # Automatically create conversation
+        user_low, user_high = sorted([requester.id, addressee.id])
+        conversation = Conversation.query.filter(
+            and_(
+                Conversation.user1_id == user_low,
+                Conversation.user2_id == user_high
+            )
+        ).first()
+
+        if not conversation:
+            conversation = Conversation(user1_id=user_low, user2_id=user_high)
+            db.session.add(conversation)
+            db.session.flush()
+        
+        conversation.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        # Invalidate cache if redis is available (import locally to avoid circular dep)
+        try:
+            from redis_config import get_redis_client
+            redis_client = get_redis_client()
+            if redis_client:
+                redis_client.delete(f"user:{requester.id}:conversations")
+                redis_client.delete(f"user:{addressee.id}:conversations")
+        except ImportError:
+            pass
+
         payload = {
             'id': addressee.id,
             'username': addressee.username,
@@ -203,7 +230,7 @@ def accept_friend_request(request_id):
             'display_name': addressee.display_name or f"{addressee.first_name} {addressee.last_name}",
             'is_online': True,
             'friendship_id': friendship.id,
-            'conversation_id': None,
+            'conversation_id': conversation.id,
         }
         notify_friend_request_response(friendship.requester_id, current_user_id, 'accepted', friendship.id, payload)
         notify_friend_request_response(current_user_id, friendship.requester_id, 'accepted', friendship.id, {
@@ -215,7 +242,7 @@ def accept_friend_request(request_id):
             'display_name': requester.display_name or f"{requester.first_name} {requester.last_name}",
             'is_online': True,
             'friendship_id': friendship.id,
-            'conversation_id': None,
+            'conversation_id': conversation.id,
         })
     
     return jsonify({'message': 'Friend request accepted'}), 200
