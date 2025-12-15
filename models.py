@@ -165,7 +165,8 @@ class Users(db.Model, SerializerMixin):
 class Message(db.Model):
     __tablename__ = 'messages'
     id = db.Column(db.Integer, primary_key=True)
-    encrypted_content = db.Column(db.Text, nullable=False)  # Store the encrypted message
+    encrypted_content = db.Column(db.Text, nullable=False)  # Store the encrypted message (ciphertext)
+    nonce = db.Column(db.String(64), nullable=True)  # Base64-encoded nonce for NaCl box decryption
     is_deleted = db.Column(db.Boolean, default=False)
     is_encrypted = db.Column(db.Boolean, default=True)  # Track if message is encrypted
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)

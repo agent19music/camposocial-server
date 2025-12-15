@@ -48,7 +48,8 @@ def _ensure_conversation(current_user_id: int, other_user_id: int) -> Conversati
     return conversation
 
 def _serialize_message(message: Message, current_user_id: int) -> dict:
-    sender = Users.query.get(message.user_id)
+    # Use the existing 'author' relationship from Users model
+    sender = message.author if hasattr(message, 'author') else Users.query.get(message.user_id)
     media_payload = [
         {
             'id': media.id,
@@ -75,13 +76,15 @@ def _serialize_message(message: Message, current_user_id: int) -> dict:
         'sender_id': message.user_id,
         'sender_username': sender.username if sender else None,
         'sender_avatar': sender.avatar if sender else None,
+        'sender_public_key': sender.public_key if sender else None,  # For E2EE decryption
         'content': None if message.is_encrypted else message.encrypted_content,
         'ciphertext': message.encrypted_content,
+        'nonce': getattr(message, 'nonce', None),  # For E2EE decryption
         'media': media_payload,
         'reply_to': message.reply_to_id,
         'encrypted': message.is_encrypted,
         'timestamp': message.timestamp.isoformat(),
-        'is_read': bool(message.read_at),
+        'is_read': bool(getattr(message, 'read_at', None)),
         'is_own': message.user_id == current_user_id,
         'reactions': reaction_payload,
         'is_deleted': message.is_deleted
@@ -105,6 +108,7 @@ def send_message():
 
         recipient_id = payload.get('recipient_id')
         raw_content = payload.get('content')
+        nonce = payload.get('nonce')  # E2EE nonce for decryption
         encrypted_flag = bool(payload.get('encrypted', False))
         provided_conversation_id = payload.get('conversation_id')
         reply_to = payload.get('reply_to')
@@ -141,6 +145,7 @@ def send_message():
 
         message = Message(
             encrypted_content=raw_content,
+            nonce=nonce,  # Store E2EE nonce
             user_id=current_user_id,
             conversation_id=conversation.id,
             reply_to_id=reply_to,

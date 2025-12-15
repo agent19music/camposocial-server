@@ -868,7 +868,7 @@ def get_hashtag_suggestions():
         return jsonify({'error': str(e)}), 500
 
 # Get who to follow suggestions
-@yap_bp.route('/who-to-follow/suggestions', methods=['GET'])
+@yap_bp.route('/yaps/who-to-follow/suggestions', methods=['GET'])
 @jwt_required()
 def get_who_to_follow_suggestions():
     try:

@@ -44,7 +44,7 @@ def login():
     if user:
         if check_password_hash(user.password, password):
             access_token = create_access_token(identity=user.id)
-            return jsonify(access_token=access_token), 200
+            return jsonify(access_token=access_token, user_id=user.id), 200
         return jsonify(message="Invalid username or password"), 401
     else:
         return jsonify({"error": "User doesn't exist!"}), 404

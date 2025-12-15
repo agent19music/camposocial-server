@@ -589,22 +589,22 @@ def send_yap_counts(user_id):
         # Get new yaps count since last seen
         new_yaps_count = Yap.query.filter(
             Yap.created_at > last_seen_time,
-            Yap.author_id != user_id  # Don't count user's own yaps
+            Yap.user_id != user_id  # Don't count user's own yaps
         ).count()
         
         # Get recent yaps with author info for the "2 new yaps (with avatars)" feature
         recent_yaps = Yap.query.filter(
             Yap.created_at > last_seen_time,
-            Yap.author_id != user_id
+            Yap.user_id != user_id
         ).order_by(Yap.created_at.desc()).limit(5).all()
         
         recent_authors = []
         for yap in recent_yaps:
             author_info = {
-                'id': yap.author.id,
-                'username': yap.author.username,
-                'avatar': yap.author.avatar,
-                'display_name': yap.author.display_name or f"{yap.author.first_name} {yap.author.last_name}"
+                'id': yap.user.id,
+                'username': yap.user.username,
+                'avatar': yap.user.avatar,
+                'display_name': yap.user.display_name or f"{yap.user.first_name} {yap.user.last_name}"
             }
             if author_info not in recent_authors:
                 recent_authors.append(author_info)

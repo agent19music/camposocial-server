@@ -164,10 +164,6 @@ def create_app():
     app.register_blueprint(friends_bp, url_prefix='/camposocial/api')
     app.register_blueprint(message_bp, url_prefix='/camposocial/api')
     
-    # Register enhanced friends blueprint
-    from views.friends_enhanced_view import friends_enhanced_bp
-    app.register_blueprint(friends_enhanced_bp, url_prefix='/camposocial/api')
-    
     # Register media handling blueprint
     from views.media_view import media_bp
     app.register_blueprint(media_bp, url_prefix='/camposocial/api')
@@ -233,4 +229,4 @@ app, socketio = create_app()
 
 if __name__ == '__main__':
     # Run the app
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
