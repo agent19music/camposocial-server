@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libgtk2.0-dev \
     postgresql-client \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -32,5 +33,16 @@ USER appuser
 # Expose port 5000
 EXPOSE 5000
 
-# Run the application with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "120", "app:app"]
+# Run the application with gunicorn using eventlet worker for Socket.IO
+# Using eventlet worker class for proper WebSocket support
+# --workers 1: eventlet handles concurrency via green threads
+# --worker-connections: max simultaneous clients per worker
+# --timeout: worker timeout (longer for WebSocket connections)
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", \
+     "--worker-class", "eventlet", \
+     "--workers", "1", \
+     "--worker-connections", "1000", \
+     "--timeout", "300", \
+     "--keep-alive", "65", \
+     "--log-level", "info", \
+     "wsgi:app"]

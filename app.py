@@ -7,6 +7,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from models import db, TokenBlocklist
 from datetime import timedelta
 import os
+import logging
 from views import *
 import boto3
 import bcrypt
@@ -15,8 +16,15 @@ from api_docs import api_bp as api_doc_bp
 from api_explorer import api_explorer_bp
 from welcome import welcome_bp
 from websocket_handlers import register_socket_handlers
+from redis_config import get_redis_url
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 def create_app():
     app = Flask(__name__)
@@ -133,14 +141,29 @@ def create_app():
             )
         return response
     
-    # Initialize SocketIO with proper configuration
-    socketio = SocketIO(
-        app, 
-        cors_allowed_origins=allowed_origins,  # Use the same origins as Flask CORS
-        async_mode='threading',  # Use threading mode for better compatibility
-        logger=True,  # Enable logging for debugging
-        engineio_logger=True  # Enable engine.io logging
-    )
+    # Initialize SocketIO with Redis message queue for multi-worker/multi-container support
+    redis_url = get_redis_url()
+    
+    # Determine async mode based on environment
+    # In production with gunicorn+eventlet/gevent, use 'eventlet' or 'gevent'
+    # For development with threading, use 'threading'
+    async_mode = os.getenv('SOCKETIO_ASYNC_MODE', 'threading')
+    
+    socketio_kwargs = {
+        'cors_allowed_origins': allowed_origins,
+        'async_mode': async_mode,
+        'logger': True,
+        'engineio_logger': os.getenv('FLASK_DEBUG', 'false').lower() == 'true',
+    }
+    
+    # Use Redis as message queue if available (required for multi-worker scaling)
+    if redis_url and os.getenv('USE_REDIS_QUEUE', 'true').lower() == 'true':
+        socketio_kwargs['message_queue'] = redis_url
+        logging.info(f"[SocketIO] Using Redis message queue: {redis_url.split('@')[-1] if '@' in redis_url else redis_url}")
+    else:
+        logging.warning("[SocketIO] Running WITHOUT Redis message queue - events won't propagate across workers!")
+    
+    socketio = SocketIO(app, **socketio_kwargs)
     
     # Register enhanced WebSocket handlers
     register_socket_handlers(socketio)
@@ -191,6 +214,10 @@ def create_app():
     # Register Badges blueprint
     from views.badges_view import badges_bp
     app.register_blueprint(badges_bp, url_prefix='/camposocial/api/badges')
+    
+    # Register Debug/Admin blueprint for monitoring
+    from views.debug_view import debug_bp
+    app.register_blueprint(debug_bp, url_prefix='/camposocial/api')
     
     # Register API documentation blueprint
     app.register_blueprint(api_doc_bp)

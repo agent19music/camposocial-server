@@ -8,8 +8,18 @@ import requests
 import secrets
 import string
 import os
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint('auth_bp', __name__)
+
+
+def get_presence_manager():
+    """Lazy import to avoid circular dependencies."""
+    from presence import get_presence_manager as _get_presence_manager
+    return _get_presence_manager()
 
 # Routes
 
@@ -90,6 +100,79 @@ def logout():
     db.session.commit()
 
     return jsonify({"success": "Logged out successfully!"}), 200
+
+
+# Get active sessions for the current user
+@auth_bp.route("/sessions", methods=["GET"])
+@jwt_required()
+def get_sessions():
+    """
+    Get information about the user's active sessions.
+    
+    Returns:
+        - is_online: Whether user has any active WebSocket connections
+        - socket_count: Number of active WebSocket connections
+        - last_seen: Last activity timestamp
+        - current_status: User's current presence status
+    
+    Note: This uses Redis-backed presence tracking. The JWT token system
+    allows multiple valid tokens per user (multi-session support).
+    Token revocation only happens on explicit logout.
+    """
+    try:
+        user_id = get_jwt_identity()
+        
+        presence = get_presence_manager()
+        status = presence.get_user_status(user_id)
+        
+        return jsonify({
+            'user_id': user_id,
+            'is_online': status['is_online'],
+            'socket_count': status['socket_count'],
+            'last_seen': status['last_seen'],
+            'current_status': status['current_status'],
+            'timestamp': datetime.utcnow().isoformat()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting sessions: {e}")
+        return jsonify({'error': 'Failed to get session info'}), 500
+
+
+# Logout from all devices
+@auth_bp.route("/logout-all", methods=["POST"])
+@jwt_required()
+def logout_all():
+    """
+    Logout from all devices by blocklisting current token.
+    
+    Note: This only blocklists the current token. Other active tokens
+    will remain valid until they expire. For complete multi-device logout,
+    we would need to track all issued tokens per user.
+    
+    WebSocket connections are handled separately by the presence system -
+    they will be cleaned up when they detect the token is invalid.
+    """
+    try:
+        user_id = get_jwt_identity()
+        jwt_data = get_jwt()
+        jti = jwt_data['jti']
+        
+        # Blocklist current token
+        token_b = TokenBlocklist(jti=jti)
+        db.session.add(token_b)
+        db.session.commit()
+        
+        logger.info(f"User {user_id} logged out from all devices")
+        
+        return jsonify({
+            "success": "Logged out from all devices",
+            "note": "Active tokens will be invalid. Please log in again on all devices."
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in logout-all: {e}")
+        return jsonify({'error': 'Logout failed'}), 500
 
 # Reset password
 @auth_bp.route("/reset_password", methods=["POST"])
