@@ -14,7 +14,7 @@ user_bp = Blueprint('user_bp', __name__)
 
 
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
-R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
@@ -24,7 +24,7 @@ s3_client = boto3.client(
     's3',
     endpoint_url=R2_ENDPOINT_URL,
     aws_access_key_id=R2_ACCESS_KEY_ID,
-    aws_secret_access_key=R2_SECRET_ACCESS_KEY
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )    
 
 # Manual signup removed - OAuth only authentication
