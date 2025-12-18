@@ -45,4 +45,5 @@ CMD ["gunicorn", "--bind", "0.0.0.0:5000", \
      "--timeout", "300", \
      "--keep-alive", "65", \
      "--log-level", "info", \
-     "wsgi:app"]
+     "wsgi:application"]
+

@@ -39,7 +39,10 @@ class Users(db.Model, SerializerMixin):
     oauth_provider = db.Column(db.String(50), nullable=True)  # 'google', 'github', 'twitter'
     oauth_id = db.Column(db.String(255), nullable=True)       # Provider-specific user ID
     is_oauth_user = db.Column(db.Boolean, default=False)      # Flag for OAuth users
-    profile_completed = db.Column(db.Boolean, default=False)  # Track profile completion 
+    profile_completed = db.Column(db.Boolean, default=False)  # Track profile completion
+    
+    # Admin role
+    is_superadmin = db.Column(db.Boolean, default=False)      # Super admin access
     
     events = db.relationship('Events', backref='user', lazy=True)
     comments_on_events = db.relationship('Comment_events', backref='user', lazy=True)
@@ -260,6 +263,7 @@ class Products(db.Model, SerializerMixin):
     
     id = db.Column(db.String, primary_key=True, default=cuid)
     title = db.Column(db.String(255))
+    slug = db.Column(db.String(300), unique=True, nullable=True, index=True)  # SEO-friendly URL slug
     description = db.Column(db.String(255))
     contact_info = db.Column(db.String(20), nullable=True)
     brand = db.Column(db.String(155), nullable=True)
@@ -268,6 +272,36 @@ class Products(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     seller_id = db.Column(db.String, db.ForeignKey('sellers.id'))
+    
+    @staticmethod
+    def generate_slug(title: str) -> str:
+        """
+        Generate a unique, SEO-friendly slug from product title.
+        Format: slugified-title-{6-char-random-suffix}
+        Example: "Floral Cupcakes (6 Pack)" -> "floral-cupcakes-6-pack-a3x9k2"
+        
+        The random suffix ensures uniqueness without database lookups.
+        """
+        import re
+        import secrets
+        
+        # Slugify the title
+        slug_base = title.lower().strip()
+        # Remove special characters except spaces and hyphens
+        slug_base = re.sub(r'[^\w\s-]', '', slug_base)
+        # Replace spaces with hyphens
+        slug_base = re.sub(r'[\s_]+', '-', slug_base)
+        # Remove consecutive hyphens
+        slug_base = re.sub(r'-+', '-', slug_base)
+        # Trim hyphens from ends
+        slug_base = slug_base.strip('-')
+        # Limit base length to keep URLs reasonable
+        slug_base = slug_base[:80]
+        
+        # Add random suffix for uniqueness (6 chars = 36^6 = 2.1 billion combinations)
+        suffix = secrets.token_urlsafe(4)[:6].lower()
+        
+        return f"{slug_base}-{suffix}"
 
     # Other relationships
     reviews = db.relationship('Reviews', backref='product', lazy=True)
@@ -329,11 +363,12 @@ class Seller(db.Model):
     is_verified = db.Column(db.Boolean, default=False)
     about = db.Column(db.Text, nullable=True)
     avatar = db.Column(db.String(255), nullable=True)  # URL for the avatar
-    phone_no = db.Column(db.String(10), nullable=True)  # URL for the avatar
+    phone_no = db.Column(db.String(15), nullable=True)  # Phone number for payouts
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), unique=True)  # Each seller corresponds to a user
 
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  
     products = db.relationship('Products', backref='seller', lazy=True)
+    payouts = db.relationship('SellerPayout', backref='seller', lazy=True)
 
 
     # Method to get total sales across seller's products
@@ -342,7 +377,187 @@ class Seller(db.Model):
 
     # Method to count the number of products the seller has
     def product_count(self):
-        return len(self.products)   
+        return len(self.products)
+    
+    # Method to get total earnings (not yet paid out)
+    def pending_earnings(self):
+        from sqlalchemy import func
+        paid_out = db.session.query(func.sum(SellerPayout.amount)).filter(
+            SellerPayout.seller_id == self.id,
+            SellerPayout.status == 'completed'
+        ).scalar() or 0
+        
+        total_earned = db.session.query(func.sum(OrderItem.price_at_purchase * OrderItem.quantity)).filter(
+            OrderItem.seller_id == self.id
+        ).join(Order).filter(Order.paid == True).scalar() or 0
+        
+        return float(total_earned) - float(paid_out)
+
+
+class SellerPayout(db.Model):
+    """Track seller payout requests and IntaSend disbursements"""
+    __tablename__ = 'seller_payouts'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    
+    # Payout status: pending, processing, completed, failed
+    status = db.Column(db.String(20), default='pending')
+    
+    # IntaSend tracking
+    intasend_tracking_id = db.Column(db.String(100), nullable=True)
+    intasend_transaction_id = db.Column(db.String(100), nullable=True)
+    
+    # Payout destination
+    phone_number = db.Column(db.String(15), nullable=True)  # M-Pesa number
+    
+    # Metadata
+    notes = db.Column(db.Text, nullable=True)
+    failed_reason = db.Column(db.Text, nullable=True)
+    
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=True)
+
+
+# Discount codes for sellers
+class Discount(db.Model):
+    __tablename__ = 'discounts'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=True)  # Null = global discount
+    code = db.Column(db.String(50), unique=True, nullable=False)
+    
+    # Discount type: percentage or fixed
+    discount_type = db.Column(db.String(20), default='percentage')  # percentage, fixed
+    value = db.Column(db.Float, nullable=False)  # Percentage (0-100) or fixed amount
+    
+    # Usage limits
+    max_uses = db.Column(db.Integer, nullable=True)  # Null = unlimited
+    current_uses = db.Column(db.Integer, default=0)
+    max_uses_per_user = db.Column(db.Integer, default=1)
+    
+    # Minimum order amount
+    min_order_amount = db.Column(db.Float, default=0)
+    max_discount_amount = db.Column(db.Float, nullable=True)  # Cap for percentage discounts
+    
+    # Validity period
+    starts_at = db.Column(db.DateTime, nullable=True)
+    expires_at = db.Column(db.DateTime, nullable=True)
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True)
+    
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    seller = db.relationship('Seller', backref='discounts', lazy=True)
+    
+    def is_valid(self):
+        """Check if discount code is currently valid"""
+        now = datetime.utcnow()
+        if not self.is_active:
+            return False
+        if self.max_uses and self.current_uses >= self.max_uses:
+            return False
+        if self.starts_at and now < self.starts_at:
+            return False
+        if self.expires_at and now > self.expires_at:
+            return False
+        return True
+    
+    def calculate_discount(self, order_total):
+        """Calculate discount amount for given order total"""
+        if order_total < self.min_order_amount:
+            return 0
+        
+        if self.discount_type == 'percentage':
+            discount = order_total * (self.value / 100)
+            if self.max_discount_amount:
+                discount = min(discount, self.max_discount_amount)
+        else:  # fixed
+            discount = min(self.value, order_total)
+        
+        return discount
+
+
+# Refund requests
+class Refund(db.Model):
+    __tablename__ = 'refunds'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    order_id = db.Column(db.String, db.ForeignKey('orders.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    
+    # Refund details
+    amount = db.Column(db.Float, nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    
+    # Status: pending, approved, rejected, processed
+    status = db.Column(db.String(20), default='pending')
+    
+    # Processing
+    reviewed_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    rejection_reason = db.Column(db.Text, nullable=True)
+    
+    # IntaSend refund tracking
+    intasend_refund_id = db.Column(db.String(100), nullable=True)
+    
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime, nullable=True)
+    
+    # Relationships
+    order = db.relationship('Order', backref='refunds', lazy=True)
+    user = db.relationship('Users', foreign_keys=[user_id], backref='refund_requests', lazy=True)
+    reviewer = db.relationship('Users', foreign_keys=[reviewed_by], backref='reviewed_refunds', lazy=True)
+
+
+# Review replies from sellers
+class ReviewReply(db.Model):
+    __tablename__ = 'review_replies'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    review_id = db.Column(db.String, db.ForeignKey('reviews.id'), nullable=False)
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=False)
+    
+    text = db.Column(db.Text, nullable=False)
+    
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    review = db.relationship('Reviews', backref='replies', lazy=True)
+    seller = db.relationship('Seller', backref='review_replies', lazy=True)
+
+
+# Seller verification requests
+class SellerVerificationRequest(db.Model):
+    __tablename__ = 'seller_verification_requests'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=False)
+    
+    # Verification documents
+    id_document_url = db.Column(db.String(500), nullable=True)
+    business_document_url = db.Column(db.String(500), nullable=True)
+    additional_notes = db.Column(db.Text, nullable=True)
+    
+    # Status: pending, approved, rejected
+    status = db.Column(db.String(20), default='pending')
+    
+    # Review
+    reviewed_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    rejection_reason = db.Column(db.Text, nullable=True)
+    
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationships
+    seller = db.relationship('Seller', backref='verification_requests', lazy=True)
+    reviewer = db.relationship('Users', backref='reviewed_verifications', lazy=True)
+
 
 class Cart(db.Model):
     __tablename__ = 'cart'
@@ -386,7 +601,23 @@ class Order(db.Model):
     id = db.Column(db.String, primary_key=True, default=cuid)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # Link to the user
     paid = db.Column(db.Boolean, default=False)  # Payment status
-    payment_reference = db.Column(db.String(255), nullable=True)  # Paystack payment reference
+    payment_reference = db.Column(db.String(255), nullable=True)  # IntaSend payment reference
+    
+    # Payment mode: pay_before, pay_on_delivery, user_choice (pending selection)
+    payment_mode = db.Column(db.String(20), default='user_choice')
+    
+    # Idempotency key to prevent duplicate order creation
+    idempotency_key = db.Column(db.String(64), unique=True, nullable=True)
+    
+    # Order status: pending, confirmed, processing, shipped, delivered, cancelled
+    status = db.Column(db.String(30), default='pending')
+    
+    # Shipping/tracking information
+    tracking_number = db.Column(db.String(100), nullable=True)
+    shipping_carrier = db.Column(db.String(50), nullable=True)
+    
+    # Unique ticket/receipt number
+    ticket_number = db.Column(db.String(50), unique=True, nullable=True)
     
     # Customer details
     first_name = db.Column(db.String(50), nullable=False)
@@ -398,10 +629,16 @@ class Order(db.Model):
     # Total price paid
     total_price = db.Column(db.Float, nullable=False, default=0.0)
     
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # Discount applied
+    discount_code = db.Column(db.String(50), nullable=True)
+    discount_amount = db.Column(db.Float, default=0.0)
     
-    # Relationship to store the items in the order (copied from the cart)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
     order_items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')
+    status_history = db.relationship('OrderStatusHistory', backref='order', lazy=True, cascade='all, delete-orphan')
 
     # Method to calculate the total order price from its items
     def calculate_total(self):
@@ -414,12 +651,38 @@ class OrderItem(db.Model):
     
     id = db.Column(db.String, primary_key=True, default=cuid)
     order_id = db.Column(db.String, db.ForeignKey('orders.id'), nullable=False)
-    product_id = db.Column(db.String, db.ForeignKey('products.id'), nullable=False)  # Link to Product table
-    quantity = db.Column(db.Integer, default=1)  # Number of products purchased
+    product_id = db.Column(db.String, db.ForeignKey('products.id'), nullable=False)
+    product_variation_id = db.Column(db.String, db.ForeignKey('product_variations.id'), nullable=True)
+    seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=True)  # Track which seller owns this item
+    quantity = db.Column(db.Integer, default=1)
+    price_at_purchase = db.Column(db.Float, nullable=True)  # Lock in price at order time
+    
+    # Relationships
+    product_variation = db.relationship('ProductVariation', backref='order_items', lazy=True)
+    seller = db.relationship('Seller', backref='order_items', lazy=True)
 
     # Method to calculate total price for this OrderItem
     def total_item_price(self):
+        if self.price_at_purchase:
+            return self.quantity * self.price_at_purchase
         return self.quantity * self.product.price
+
+
+# Order status history for audit trail
+class OrderStatusHistory(db.Model):
+    __tablename__ = 'order_status_history'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    order_id = db.Column(db.String, db.ForeignKey('orders.id'), nullable=False)
+    status = db.Column(db.String(30), nullable=False)
+    changed_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationship
+    user = db.relationship('Users', backref='status_changes', lazy=True)
+
+
 # Yap model (tweets)
 class Yap(db.Model):
     __tablename__ = 'yaps'
