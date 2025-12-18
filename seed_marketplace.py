@@ -8,11 +8,11 @@ Run with: docker exec camposocial-server python seed_marketplace.py
 from app import app, db
 from models import Users, Seller, Products, ProductImages, ProductVariation
 from datetime import datetime
-import bcrypt
+from werkzeug.security import generate_password_hash
 
 def hash_password(password):
-    """Hash a password for storing."""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    """Hash a password for storing using werkzeug (Flask-compatible)."""
+    return generate_password_hash(password)
 
 def seed_marketplace():
     """Seed the database with demo marketplace data"""

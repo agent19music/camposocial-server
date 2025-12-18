@@ -972,8 +972,14 @@ def intasend_webhook():
             order.payment_reference = invoice_id
             order.status = 'confirmed'
             
-            # TODO: Send confirmation email via Resend API
-            
+            # Send confirmation email via Resend API
+            try:
+                from email_service import get_email_service
+                email_service = get_email_service()
+                if email_service.is_configured():
+                    email_service.send_order_confirmation(order)
+            except Exception as e:
+                print(f"Failed to send email: {e}")
         elif state == "FAILED":
             order.status = 'payment_failed'
         

@@ -100,7 +100,7 @@ class EmailService:
     
     def send_order_confirmation(self, order) -> Dict[str, Any]:
         """
-        Send order confirmation email to buyer
+        Send order confirmation email to buyer (Vintage Receipt Style)
         
         Args:
             order: Order object with customer details and items
@@ -111,13 +111,21 @@ class EmailService:
             price = item.price_at_purchase or (product.price if product else 0)
             items_html += f"""
             <tr>
-                <td style="padding: 12px; border-bottom: 1px solid #eee;">{product.title if product else 'Product'}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">{item.quantity}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">KES {price:,.2f}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">KES {item.total_item_price():,.2f}</td>
+                <td style="padding: 8px 0; font-family: 'Courier New', Courier, monospace; color: #333;">{product.title if product else 'Product'} <span style="color: #666; font-size: 12px;">x {item.quantity}</span></td>
+                <td style="padding: 8px 0; text-align: right; font-family: 'Courier New', Courier, monospace; font-weight: bold; color: #333;">KES {item.total_item_price():,.2f}</td>
             </tr>
             """
         
+        # Calculate discount display
+        discount_html = ""
+        if order.discount_amount > 0:
+            discount_html = f"""
+            <tr>
+                <td style="padding: 8px 0; font-family: 'Courier New', Courier, monospace; color: #333;">Discount ({order.discount_code})</td>
+                <td style="padding: 8px 0; text-align: right; font-family: 'Courier New', Courier, monospace; color: #ef4444;">- KES {order.discount_amount:,.2f}</td>
+            </tr>
+            """
+
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -125,59 +133,88 @@ class EmailService:
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
         </head>
-        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
-                    <h1 style="color: white; margin: 0; font-size: 24px;">Order Confirmed! 🎉</h1>
-                </div>
-                
-                <div style="background: white; padding: 30px; border-radius: 0 0 12px 12px;">
-                    <p style="color: #374151; font-size: 16px;">Hi {order.first_name},</p>
+        <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: 'Courier New', Courier, monospace;">
+            <div style="width: 100%; padding: 40px 0;">
+                <!-- Receipt Container -->
+                <div style="max-width: 480px; margin: 0 auto; background-color: #fffcf8; padding: 40px; border-radius: 2px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); position: relative; overflow: hidden;">
                     
-                    <p style="color: #374151; font-size: 16px;">Thank you for your order! We've received your order and it's being processed.</p>
-                    
-                    <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                        <p style="margin: 0; color: #6b7280; font-size: 14px;">Order Number</p>
-                        <p style="margin: 5px 0 0; color: #111827; font-size: 20px; font-weight: bold;">{order.ticket_number or order.id}</p>
+                    <!-- Dotted Pattern Background (Simulated) -->
+                    <div style="position: absolute; top: 0; left: 0; right: 0; height: 8px; background-image: radial-gradient(#e5e7eb 1px, transparent 1px); background-size: 8px 8px; opacity: 0.5;"></div>
+
+                    <!-- PAID Stamp -->
+                    <div style="position: absolute; top: 20px; right: 20px; border: 3px solid #22c55e; color: #22c55e; padding: 10px 20px; font-weight: bold; font-size: 20px; text-transform: uppercase; transform: rotate(12deg); opacity: 0.8; border-radius: 8px; font-family: sans-serif; letter-spacing: 2px;">
+                        PAID
                     </div>
-                    
-                    <h3 style="color: #374151; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px;">Order Summary</h3>
-                    
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <thead>
-                            <tr style="background: #f9fafb;">
-                                <th style="padding: 12px; text-align: left; font-weight: 600; color: #374151;">Item</th>
-                                <th style="padding: 12px; text-align: center; font-weight: 600; color: #374151;">Qty</th>
-                                <th style="padding: 12px; text-align: right; font-weight: 600; color: #374151;">Price</th>
-                                <th style="padding: 12px; text-align: right; font-weight: 600; color: #374151;">Total</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {items_html}
-                        </tbody>
-                        <tfoot>
+
+                    <!-- Header -->
+                    <div style="text-align: center; border-bottom: 2px dashed #d1d5db; padding-bottom: 20px; margin-bottom: 20px;">
+                        <h1 style="margin: 0; font-size: 24px; color: #1f2937; letter-spacing: -0.5px; text-transform: uppercase;">CampoSocial</h1>
+                        <p style="margin: 5px 0 0; color: #6b7280; font-size: 12px;">Marketplace Receipt</p>
+                    </div>
+
+                    <!-- Order Info -->
+                    <div style="margin-bottom: 20px;">
+                        <table style="width: 100%; font-size: 14px;">
                             <tr>
-                                <td colspan="3" style="padding: 12px; text-align: right; font-weight: bold; color: #374151;">Total:</td>
-                                <td style="padding: 12px; text-align: right; font-weight: bold; color: #667eea; font-size: 18px;">KES {order.total_price:,.2f}</td>
+                                <td style="color: #6b7280;">Order Number:</td>
+                                <td style="text-align: right; font-weight: bold; color: #1f2937;">{order.ticket_number or order.id}</td>
                             </tr>
-                        </tfoot>
-                    </table>
-                    
-                    <div style="margin-top: 30px; padding: 20px; background: #f0fdf4; border-radius: 8px; border-left: 4px solid #22c55e;">
-                        <p style="margin: 0; color: #166534; font-size: 14px;">
-                            <strong>Delivery Address:</strong><br>
-                            {order.address}
-                        </p>
+                            <tr>
+                                <td style="color: #6b7280;">Date:</td>
+                                <td style="text-align: right; font-weight: bold; color: #1f2937;">{order.created_at.strftime('%d %b %Y')}</td>
+                            </tr>
+                        </table>
                     </div>
-                    
-                    <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
-                        If you have any questions, reply to this email or contact us at support@camposocial.app
-                    </p>
+
+                    <!-- Divider -->
+                    <div style="border-bottom: 2px dashed #d1d5db; margin: 20px 0;"></div>
+
+                    <!-- Customer Details -->
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="margin: 0 0 10px; font-size: 14px; text-transform: uppercase; color: #1f2937;">Customer Details</h3>
+                        <p style="margin: 0; font-size: 14px; color: #4b5563;">{order.first_name} {order.last_name}</p>
+                        <p style="margin: 5px 0 0; font-size: 14px; color: #4b5563;">{order.email}</p>
+                        <p style="margin: 5px 0 0; font-size: 14px; color: #4b5563;">{order.phone}</p>
+                    </div>
+
+                    <!-- Divider -->
+                    <div style="border-bottom: 2px dashed #d1d5db; margin: 20px 0;"></div>
+
+                    <!-- Items -->
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="margin: 0 0 10px; font-size: 14px; text-transform: uppercase; color: #1f2937;">Order Items</h3>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                            {items_html}
+                            {discount_html}
+                        </table>
+                    </div>
+
+                    <!-- Divider -->
+                    <div style="border-bottom: 2px dashed #d1d5db; margin: 20px 0;"></div>
+
+                    <!-- Total -->
+                    <div style="margin-bottom: 30px;">
+                        <table style="width: 100%; font-size: 18px;">
+                            <tr>
+                                <td style="font-weight: bold; color: #1f2937;">TOTAL</td>
+                                <td style="text-align: right; font-weight: bold; color: #1f2937;">KES {order.total_price:,.2f}</td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <!-- Footer -->
+                    <div style="text-align: center; color: #9ca3af; font-size: 12px;">
+                        <p style="margin: 0;">Keep this receipt for your records.</p>
+                        <p style="margin: 5px 0 0;">Thank you for shopping with us! 🛍️</p>
+                    </div>
+
+                    <!-- Jagged Edge (Simulated with border) -->
+                    <div style="margin-top: 30px; height: 10px; background: repeating-linear-gradient(45deg, #fffcf8, #fffcf8 10px, #f3f4f6 10px, #f3f4f6 20px);"></div>
                 </div>
                 
-                <p style="text-align: center; color: #9ca3af; font-size: 12px; margin-top: 20px;">
-                    © {datetime.utcnow().year} CampoSocial. All rights reserved.
-                </p>
+                <div style="text-align: center; margin-top: 20px; color: #6b7280; font-size: 12px; font-family: sans-serif;">
+                    &copy; {datetime.utcnow().year} CampoSocial. All rights reserved.
+                </div>
             </div>
         </body>
         </html>
@@ -185,7 +222,7 @@ class EmailService:
         
         return self.send_email(
             to=order.email,
-            subject=f"Order Confirmed - {order.ticket_number or order.id}",
+            subject=f"Receipt for Order {order.ticket_number or order.id}",
             html=html,
             tags=[{"name": "category", "value": "order_confirmation"}]
         )

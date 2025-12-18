@@ -80,6 +80,12 @@ python-magic==0.4.27
 # Cryptography
 cryptography
 
+# Payment Processing
+intasend-python
+
+# Email
+resend>=2.19.0
+
 # Other
 packaging==23.2
 six==1.16.0

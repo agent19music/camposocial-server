@@ -412,7 +412,162 @@ def get_seller_analytics(seller):
         return jsonify({"error": str(e)}), 500
 
 
+@seller_bp.route('/seller/sales-over-time', methods=['GET'])
+@jwt_required()
+@seller_required
+def get_sales_over_time(seller):
+    """Get daily sales data for charts"""
+    from datetime import timedelta
+    
+    try:
+        period = request.args.get('period', '30d')  # 7d, 30d, 90d
+        
+        # Parse period
+        days = int(period.replace('d', ''))
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        
+        # Get daily sales grouped by date
+        daily_sales = db.session.query(
+            func.date(Order.created_at).label('date'),
+            func.sum(OrderItem.price_at_purchase * OrderItem.quantity).label('revenue'),
+            func.count(Order.id.distinct()).label('order_count')
+        ).join(OrderItem).filter(
+            OrderItem.seller_id == seller.id,
+            Order.paid == True,
+            Order.created_at >= start_date
+        ).group_by(
+            func.date(Order.created_at)
+        ).order_by(
+            func.date(Order.created_at)
+        ).all()
+        
+        # Fill in missing dates with zero values
+        sales_by_date = {str(s.date): {'revenue': float(s.revenue), 'orders': s.order_count} for s in daily_sales}
+        
+        result = []
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
+            data = sales_by_date.get(date_str, {'revenue': 0, 'orders': 0})
+            result.append({
+                'date': date_str,
+                'revenue': data['revenue'],
+                'orders': data['orders']
+            })
+            current_date += timedelta(days=1)
+        
+        return jsonify({
+            'period': period,
+            'data': result,
+            'total_revenue': sum(d['revenue'] for d in result),
+            'total_orders': sum(d['orders'] for d in result)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/dashboard-summary', methods=['GET'])
+@jwt_required()
+@seller_required
+def get_dashboard_summary(seller):
+    """Consolidated dashboard data in single API call"""
+    from datetime import timedelta
+    
+    try:
+        # Get analytics
+        revenue = db.session.query(
+            func.sum(OrderItem.price_at_purchase * OrderItem.quantity)
+        ).filter(
+            OrderItem.seller_id == seller.id
+        ).join(Order).filter(
+            Order.paid == True
+        ).scalar() or 0
+        
+        total_orders = db.session.query(func.count(Order.id.distinct())).join(
+            OrderItem
+        ).filter(
+            OrderItem.seller_id == seller.id
+        ).scalar() or 0
+        
+        total_products = len(seller.products)
+        
+        # Average rating
+        product_ids = [p.id for p in seller.products]
+        avg_rating = 0
+        if product_ids:
+            avg_rating = db.session.query(func.avg(Reviews.rating)).filter(
+                Reviews.product_id.in_(product_ids)
+            ).scalar() or 0
+        
+        # Recent orders (last 5)
+        recent_orders = db.session.query(Order).join(OrderItem).filter(
+            OrderItem.seller_id == seller.id
+        ).order_by(Order.created_at.desc()).limit(5).all()
+        
+        # Top products by sales
+        top_products = db.session.query(
+            Products.id,
+            Products.title,
+            func.sum(OrderItem.quantity).label('units_sold'),
+            func.sum(OrderItem.price_at_purchase * OrderItem.quantity).label('revenue')
+        ).join(OrderItem).filter(
+            Products.seller_id == seller.id
+        ).group_by(Products.id).order_by(
+            func.sum(OrderItem.quantity).desc()
+        ).limit(5).all()
+        
+        # 7-day sales for mini chart
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        weekly_sales = db.session.query(
+            func.date(Order.created_at).label('date'),
+            func.sum(OrderItem.price_at_purchase * OrderItem.quantity).label('revenue')
+        ).join(OrderItem).filter(
+            OrderItem.seller_id == seller.id,
+            Order.paid == True,
+            Order.created_at >= seven_days_ago
+        ).group_by(func.date(Order.created_at)).all()
+        
+        return jsonify({
+            'stats': {
+                'total_revenue': float(revenue),
+                'total_orders': total_orders,
+                'total_products': total_products,
+                'average_rating': round(float(avg_rating), 2)
+            },
+            'recent_orders': [
+                {
+                    'id': o.id,
+                    'customer': o.user.display_name or o.user.username if o.user else 'Guest',
+                    'total': float(o.total_amount),
+                    'status': o.status,
+                    'created_at': o.created_at.isoformat()
+                }
+                for o in recent_orders
+            ],
+            'top_products': [
+                {
+                    'id': p.id,
+                    'title': p.title,
+                    'units_sold': int(p.units_sold),
+                    'revenue': float(p.revenue)
+                }
+                for p in top_products
+            ],
+            'weekly_sales': [
+                {'date': str(s.date), 'revenue': float(s.revenue)}
+                for s in weekly_sales
+            ],
+            'has_data': total_products > 0 or total_orders > 0
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ==================== PAYOUTS ====================
+
 
 @seller_bp.route('/seller/earnings', methods=['GET'])
 @jwt_required()

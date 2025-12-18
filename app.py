@@ -62,6 +62,9 @@ def create_app():
         'https://camposocial.vercel.app',
         'https://seller.camposocial.app',
         'https://camposocial.app',
+        'https://seller.camposocial.app',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
     }
 
     # Load additional origins from environment variables

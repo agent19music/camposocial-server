@@ -54,7 +54,24 @@ def login():
     if user:
         if check_password_hash(user.password, password):
             access_token = create_access_token(identity=user.id)
-            return jsonify(access_token=access_token, user_id=user.id), 200
+            
+            response = jsonify(access_token=access_token, user_id=user.id)
+            
+            # Set HTTP-only cookie for cross-app auth (seller dashboard)
+            cookie_domain = os.environ.get('AUTH_COOKIE_DOMAIN')  # e.g., '.camposocial.app'
+            secure = os.environ.get('FLASK_ENV') == 'production'
+            
+            response.set_cookie(
+                'authToken',
+                access_token,
+                httponly=True,
+                secure=secure,
+                samesite='Lax' if not cookie_domain else 'None',
+                domain=cookie_domain if cookie_domain else None,
+                max_age=86400  # 24 hours
+            )
+            
+            return response, 200
         return jsonify(message="Invalid username or password"), 401
     else:
         return jsonify({"error": "User doesn't exist!"}), 404
@@ -539,3 +556,114 @@ def complete_profile():
     db.session.commit()
     
     return jsonify({"message": "Profile completed successfully"}), 200
+
+
+# ============ Cross-App Auth Endpoints ============
+
+@auth_bp.route("/auth/set-cookie", methods=["POST"])
+@jwt_required()
+def set_auth_cookie():
+    """
+    Exchange JWT token for httpOnly cookie (for seller dashboard cross-app auth).
+    The frontend calls this before redirecting to seller dash.
+    """
+    try:
+        user_id = get_jwt_identity()
+        
+        # Create a fresh token for the cookie
+        access_token = create_access_token(identity=user_id)
+        
+        response = jsonify({"success": True, "user_id": user_id})
+        
+        cookie_domain = os.environ.get('AUTH_COOKIE_DOMAIN')
+        secure = os.environ.get('FLASK_ENV') == 'production'
+        
+        response.set_cookie(
+            'authToken',
+            access_token,
+            httponly=True,
+            secure=secure,
+            samesite='Lax' if not cookie_domain else 'None',
+            domain=cookie_domain if cookie_domain else None,
+            max_age=86400  # 24 hours
+        )
+        
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"Error setting auth cookie: {e}")
+        return jsonify({"error": "Failed to set auth cookie"}), 500
+
+
+@auth_bp.route("/auth/clear-cookie", methods=["POST"])
+def clear_auth_cookie():
+    """Clear the auth cookie (for logout across apps)."""
+    response = jsonify({"success": True})
+    
+    cookie_domain = os.environ.get('AUTH_COOKIE_DOMAIN')
+    
+    response.set_cookie(
+        'authToken',
+        '',
+        httponly=True,
+        secure=True,
+        samesite='Lax' if not cookie_domain else 'None',
+        domain=cookie_domain if cookie_domain else None,
+        max_age=0  # Immediately expire
+    )
+    
+    return response, 200
+
+
+# ============ Dev-Only Endpoints ============
+
+@auth_bp.route("/dev/seller/auto-approve/<int:user_id>", methods=["POST"])
+def auto_approve_seller(user_id):
+    """
+    Auto-approve a seller for testing. DEV ONLY.
+    Creates seller if doesn't exist, sets is_verified=True.
+    
+    Usage: curl -X POST http://localhost:5000/camposocial/api/dev/seller/auto-approve/1
+    """
+    from flask import current_app
+    
+    # SECURITY: Only allow in debug/development mode
+    if not current_app.debug and os.environ.get('FLASK_ENV') != 'development':
+        return jsonify({"error": "This endpoint is only available in development mode"}), 403
+    
+    try:
+        user = Users.query.get(user_id)
+        if not user:
+            return jsonify({"error": f"User with ID {user_id} not found"}), 404
+        
+        seller = Seller.query.filter_by(user_id=user_id).first()
+        
+        if not seller:
+            # Create seller if doesn't exist
+            seller = Seller(
+                user_id=user_id,
+                display_name=user.display_name or user.username,
+                is_verified=True,
+                about=f"Auto-approved seller account for {user.username}"
+            )
+            db.session.add(seller)
+            logger.info(f"[DEV] Created and auto-approved seller for user {user_id}")
+        else:
+            # Just verify existing seller
+            seller.is_verified = True
+            logger.info(f"[DEV] Auto-approved existing seller for user {user_id}")
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Seller approved successfully",
+            "seller_id": seller.id,
+            "user_id": user_id,
+            "display_name": seller.display_name,
+            "is_verified": seller.is_verified
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error auto-approving seller: {e}")
+        return jsonify({"error": str(e)}), 500
