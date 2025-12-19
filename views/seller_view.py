@@ -12,6 +12,31 @@ from models import (
 from datetime import datetime
 from sqlalchemy import func, or_
 from functools import wraps
+import os
+import boto3
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+import uuid
+
+# Load environment variables
+load_dotenv()
+
+# R2 Configuration (same as yap_view.py)
+R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID') or os.getenv('AWS_ACCESS_KEY_ID')
+R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY') or os.getenv('AWS_SECRET_ACCESS_KEY')
+R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
+R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
+IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
+
+# Initialize S3 client for R2
+s3_client = None
+if R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY:
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT_URL,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY
+    )
 
 seller_bp = Blueprint('seller_bp', __name__)
 
@@ -55,11 +80,13 @@ def get_seller_products(seller):
                 'price': product.price,
                 'category': product.category,
                 'brand': product.brand,
+                'is_active': getattr(product, 'is_active', True),
+                'status': getattr(product, 'status', 'active'),
                 'total_sales': product.total_sales,
                 'average_rating': product.average_rating(),
                 'created_at': product.created_at.isoformat(),
                 'updated_at': product.updated_at.isoformat(),
-                'images': [img.image_url for img in product.images],
+                'images': [{'id': img.id, 'url': img.image_url} for img in product.images],
                 'variations': [
                     {
                         'id': v.id,
@@ -78,6 +105,442 @@ def get_seller_products(seller):
         }), 200
         
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>', methods=['GET'])
+@jwt_required()
+@seller_required
+def get_seller_product(seller, product_id):
+    """Get a single product belonging to the seller"""
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        return jsonify({
+            'id': product.id,
+            'title': product.title,
+            'slug': product.slug,
+            'description': product.description,
+            'price': product.price,
+            'category': product.category,
+            'brand': product.brand,
+            'is_active': getattr(product, 'is_active', True),
+            'total_sales': product.total_sales,
+            'average_rating': product.average_rating(),
+            'created_at': product.created_at.isoformat(),
+            'updated_at': product.updated_at.isoformat(),
+            'images': [{'id': img.id, 'url': img.image_url, 'variant_id': getattr(img, 'variant_id', None)} for img in product.images],
+            'variations': [
+                {
+                    'id': v.id,
+                    'name': v.variation_name,
+                    'value': v.variation_value,
+                    'price': v.price,
+                    'stock': v.stock
+                } for v in product.variations
+            ],
+            'review_count': len(product.reviews)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products', methods=['POST'])
+@jwt_required()
+@seller_required
+def create_seller_product(seller):
+    """
+    Create a new product for the seller
+    
+    Body (JSON or FormData):
+        title: Product title (required)
+        description: Product description
+        price: Base price
+        category: Product category
+        brand: Brand name
+        variations: Array of {name, value, price, stock}
+        images: Array of image files (if FormData)
+    """
+    try:
+        # Handle both JSON and FormData
+        if request.is_json:
+            data = request.get_json()
+            files = []
+        else:
+            data = {key: request.form.get(key) for key in request.form}
+            files = request.files.getlist('images')
+            # Parse JSON fields from FormData
+            if 'variations' in data and isinstance(data['variations'], str):
+                import json
+                data['variations'] = json.loads(data['variations'])
+        
+        title = data.get('title')
+        if not title:
+            return jsonify({"error": "Product title required"}), 400
+        
+        # Create product
+        product = Products(
+            title=title,
+            slug=Products.generate_slug(title),
+            description=data.get('description', ''),
+            price=float(data.get('price', 0)) if data.get('price') else None,
+            category=data.get('category', ''),
+            brand=data.get('brand', ''),
+            seller_id=seller.id
+        )
+        db.session.add(product)
+        db.session.flush()  # Get product ID
+        
+        # Handle variations
+        variations = data.get('variations', [])
+        for var in variations:
+            variation = ProductVariation(
+                product_id=product.id,
+                variation_name=var.get('name', 'Size'),
+                variation_value=var.get('value', ''),
+                price=float(var.get('price', 0)) if var.get('price') else product.price,
+                stock=int(var.get('stock', 0)) if var.get('stock') else 0
+            )
+            db.session.add(variation)
+        
+        # Handle image uploads to R2 using global s3_client
+        print(f"[DEBUG] Files received: {len(files)} files")
+        print(f"[DEBUG] s3_client initialized: {s3_client is not None}")
+        print(f"[DEBUG] R2_BUCKET_NAME: {R2_BUCKET_NAME}")
+        print(f"[DEBUG] IMAGE_PREFIX: {IMAGE_PREFIX}")
+        
+        image_urls = []
+        if files and s3_client:
+            try:
+                for file in files:
+                    if file and file.filename:
+                        # Generate unique filename to avoid collisions
+                        original_filename = secure_filename(file.filename)
+                        unique_id = str(uuid.uuid4())[:8]
+                        filename = f"{unique_id}_{original_filename}"
+                        file_key = f"products/{product.id}/{filename}"
+                        
+                        print(f"[DEBUG] Uploading file: {file.filename} -> {file_key}")
+                        
+                        s3_client.upload_fileobj(file, R2_BUCKET_NAME, file_key)
+                        image_url = f"{IMAGE_PREFIX}/{file_key}"
+                        image_urls.append(image_url)
+                        
+                        print(f"[DEBUG] Uploaded successfully: {image_url}")
+                        
+                        product_image = ProductImages(
+                            product_id=product.id,
+                            image_url=image_url
+                        )
+                        db.session.add(product_image)
+            except Exception as upload_error:
+                print(f"[ERROR] R2 upload failed: {str(upload_error)}")
+                # Continue without images rather than failing completely
+        else:
+            if not files:
+                print("[DEBUG] No files received in request")
+            if not s3_client:
+                print("[DEBUG] s3_client not initialized - R2 credentials missing")
+        
+        db.session.commit()
+        
+        print(f"[DEBUG] Product created with {len(image_urls)} images")
+        
+        return jsonify({
+            "message": "Product created successfully",
+            "product": {
+                "id": product.id,
+                "title": product.title,
+                "slug": product.slug,
+                "images": image_urls,
+                "variations_count": len(variations)
+            }
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"[ERROR] Product creation failed: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>', methods=['PATCH'])
+@jwt_required()
+@seller_required
+def update_seller_product(seller, product_id):
+    """
+    Update an existing product
+    
+    Body:
+        title, description, price, category, brand: Basic fields
+        variations: Array of variations to update/add
+        remove_variations: Array of variation IDs to remove
+        remove_images: Array of image IDs to remove
+    """
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        # Handle both JSON and FormData
+        if request.is_json:
+            data = request.get_json()
+            files = []
+        else:
+            data = {key: request.form.get(key) for key in request.form}
+            files = request.files.getlist('images')
+            # Parse JSON fields
+            for field in ['variations', 'remove_variations', 'remove_images']:
+                if field in data and isinstance(data[field], str):
+                    import json
+                    data[field] = json.loads(data[field])
+        
+        # Update basic fields
+        if 'title' in data:
+            product.title = data['title']
+        if 'description' in data:
+            product.description = data['description']
+        if 'price' in data:
+            product.price = float(data['price']) if data['price'] else None
+        if 'category' in data:
+            product.category = data['category']
+        if 'brand' in data:
+            product.brand = data['brand']
+        
+        product.updated_at = datetime.utcnow()
+        
+        # Remove specified variations
+        remove_var_ids = data.get('remove_variations', [])
+        if remove_var_ids:
+            ProductVariation.query.filter(
+                ProductVariation.id.in_(remove_var_ids),
+                ProductVariation.product_id == product.id
+            ).delete(synchronize_session=False)
+        
+        # Update/add variations
+        variations = data.get('variations', [])
+        for var in variations:
+            if var.get('id'):
+                # Update existing
+                existing = ProductVariation.query.filter_by(
+                    id=var['id'], 
+                    product_id=product.id
+                ).first()
+                if existing:
+                    existing.variation_name = var.get('name', existing.variation_name)
+                    existing.variation_value = var.get('value', existing.variation_value)
+                    existing.price = float(var.get('price', existing.price)) if var.get('price') else existing.price
+                    existing.stock = int(var.get('stock', existing.stock)) if var.get('stock') is not None else existing.stock
+            else:
+                # Add new
+                new_var = ProductVariation(
+                    product_id=product.id,
+                    variation_name=var.get('name', 'Size'),
+                    variation_value=var.get('value', ''),
+                    price=float(var.get('price', 0)) if var.get('price') else product.price,
+                    stock=int(var.get('stock', 0)) if var.get('stock') else 0
+                )
+                db.session.add(new_var)
+        
+        # Remove specified images
+        remove_img_ids = data.get('remove_images', [])
+        if remove_img_ids:
+            ProductImages.query.filter(
+                ProductImages.id.in_(remove_img_ids),
+                ProductImages.product_id == product.id
+            ).delete(synchronize_session=False)
+        
+        # Handle new image uploads
+        if files:
+            import os
+            from werkzeug.utils import secure_filename
+            import boto3
+            
+            R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
+            R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
+            R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
+            R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
+            IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
+            
+            if R2_ACCESS_KEY_ID:
+                s3_client = boto3.client(
+                    's3',
+                    endpoint_url=R2_ENDPOINT_URL,
+                    aws_access_key_id=R2_ACCESS_KEY_ID,
+                    aws_secret_access_key=R2_SECRET_ACCESS_KEY
+                )
+                
+                for file in files:
+                    if file and file.filename:
+                        filename = secure_filename(file.filename)
+                        file_key = f"products/{product.id}/{filename}"
+                        s3_client.upload_fileobj(file, R2_BUCKET_NAME, file_key)
+                        image_url = f"{IMAGE_PREFIX}/{file_key}"
+                        
+                        product_image = ProductImages(
+                            product_id=product.id,
+                            image_url=image_url
+                        )
+                        db.session.add(product_image)
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Product updated successfully",
+            "product_id": product.id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>', methods=['DELETE'])
+@jwt_required()
+@seller_required
+def delete_seller_product(seller, product_id):
+    """Delete a product (hard delete)"""
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        # Delete associated data
+        ProductVariation.query.filter_by(product_id=product.id).delete()
+        ProductImages.query.filter_by(product_id=product.id).delete()
+        Reviews.query.filter_by(product_id=product.id).delete()
+        
+        db.session.delete(product)
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Product deleted successfully",
+            "product_id": product_id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>/stock', methods=['PATCH'])
+@jwt_required()
+@seller_required
+def update_product_stock(seller, product_id):
+    """
+    Update stock for product variations
+    
+    Body:
+        variations: Array of {id, stock}
+    """
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        data = request.get_json()
+        variations = data.get('variations', [])
+        
+        updated = 0
+        for var in variations:
+            if var.get('id') and var.get('stock') is not None:
+                existing = ProductVariation.query.filter_by(
+                    id=var['id'],
+                    product_id=product.id
+                ).first()
+                if existing:
+                    existing.stock = int(var['stock'])
+                    updated += 1
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": f"Updated stock for {updated} variations",
+            "product_id": product.id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>/toggle', methods=['PATCH'])
+@jwt_required()
+@seller_required
+def toggle_product_status(seller, product_id):
+    """Toggle product active/inactive status"""
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        data = request.get_json() or {}
+        
+        # Update is_active flag
+        if 'is_active' in data:
+            product.is_active = data['is_active']
+        else:
+            # Toggle if no value provided
+            product.is_active = not product.is_active
+        
+        db.session.commit()
+        
+        return jsonify({
+            "message": f"Product {'activated' if product.is_active else 'deactivated'}",
+            "product_id": product.id,
+            "is_active": product.is_active,
+            "status": product.status
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@seller_bp.route('/seller/products/<product_id>/status', methods=['PATCH'])
+@jwt_required()
+@seller_required
+def update_product_status(seller, product_id):
+    """
+    Update product status
+    
+    Body:
+        status: One of 'draft', 'active', 'archived', 'sold_out'
+    """
+    try:
+        product = Products.query.filter_by(id=product_id, seller_id=seller.id).first()
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+        
+        data = request.get_json() or {}
+        new_status = data.get('status')
+        
+        valid_statuses = ['draft', 'active', 'archived', 'sold_out']
+        if new_status not in valid_statuses:
+            return jsonify({
+                "error": f"Invalid status. Must be one of: {valid_statuses}"
+            }), 400
+        
+        old_status = product.status
+        product.status = new_status
+        
+        # Auto-update is_active based on status
+        product.is_active = new_status == 'active'
+        
+        product.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            "message": f"Product status changed from '{old_status}' to '{new_status}'",
+            "product_id": product.id,
+            "status": product.status,
+            "is_active": product.is_active
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
 

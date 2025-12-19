@@ -269,6 +269,11 @@ class Products(db.Model, SerializerMixin):
     brand = db.Column(db.String(155), nullable=True)
     price = db.Column(db.Float)
     category = db.Column(db.String(50))
+    
+    # Product status: draft, active, archived, sold_out
+    status = db.Column(db.String(20), default='active', index=True)
+    is_active = db.Column(db.Boolean, default=True, index=True)  # Quick toggle for visibility
+    
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     seller_id = db.Column(db.String, db.ForeignKey('sellers.id'))
@@ -337,7 +342,8 @@ class ProductImages(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     image_url = db.Column(db.String(255), nullable=False)
-    product_id = db.Column(db.String, db.ForeignKey('products.id'))   
+    product_id = db.Column(db.String, db.ForeignKey('products.id'))
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 class ProductVariation(db.Model, SerializerMixin):
     __tablename__ = 'product_variations'
