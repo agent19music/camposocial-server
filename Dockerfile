@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
+# Make entrypoint script executable
+RUN chmod +x docker-entrypoint.sh
+
 # Create a non-root user to run the app
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
@@ -33,17 +36,5 @@ USER appuser
 # Expose port 5000
 EXPOSE 5000
 
-# Run the application with gunicorn using eventlet worker for Socket.IO
-# Using eventlet worker class for proper WebSocket support
-# --workers 1: eventlet handles concurrency via green threads
-# --worker-connections: max simultaneous clients per worker
-# --timeout: worker timeout (longer for WebSocket connections)
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", \
-     "--worker-class", "eventlet", \
-     "--workers", "1", \
-     "--worker-connections", "1000", \
-     "--timeout", "300", \
-     "--keep-alive", "65", \
-     "--log-level", "info", \
-     "wsgi:application"]
-
+# Use entrypoint script for startup (runs migrations + optional seeding)
+ENTRYPOINT ["/bin/bash", "./docker-entrypoint.sh"]

@@ -41,6 +41,11 @@ class Users(db.Model, SerializerMixin):
     is_oauth_user = db.Column(db.Boolean, default=False)      # Flag for OAuth users
     profile_completed = db.Column(db.Boolean, default=False)  # Track profile completion
     
+    # Email verification fields (for manual signup)
+    email_verified = db.Column(db.Boolean, default=False)     # True if email is verified
+    verification_code = db.Column(db.String(6), nullable=True)  # 6-digit OTP
+    verification_code_expires = db.Column(db.DateTime, nullable=True)  # OTP expiry time
+    
     # Admin role
     is_superadmin = db.Column(db.Boolean, default=False)      # Super admin access
     

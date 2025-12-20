@@ -1436,3 +1436,103 @@ def get_reviews(product_id):
     return jsonify({'reviews': reviews})
 
 
+# ==================== WISHLIST ENDPOINTS ====================
+
+@marketplace_bp.route('/wishlist/toggle', methods=['POST'])
+@jwt_required()
+def toggle_wishlist():
+    """Add or remove a product from user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        product_id = data.get('product_id')
+
+        if not product_id:
+            return jsonify({'error': 'Product ID is required'}), 400
+
+        # Check if product exists
+        product = Products.query.get(product_id)
+        if not product:
+            return jsonify({'error': 'Product not found'}), 404
+
+        # Check if already in wishlist
+        existing = Wishlists.query.filter_by(user_id=user_id, product_id=product_id).first()
+
+        if existing:
+            # Remove from wishlist
+            db.session.delete(existing)
+            db.session.commit()
+            return jsonify({
+                'message': 'Product removed from wishlist',
+                'in_wishlist': False,
+                'product_id': product_id
+            }), 200
+        else:
+            # Add to wishlist
+            wishlist_item = Wishlists(user_id=user_id, product_id=product_id)
+            db.session.add(wishlist_item)
+            db.session.commit()
+            return jsonify({
+                'message': 'Product added to wishlist',
+                'in_wishlist': True,
+                'product_id': product_id
+            }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/wishlist', methods=['GET'])
+@jwt_required()
+def get_wishlist():
+    """Get all products in user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        
+        wishlist_items = Wishlists.query.filter_by(user_id=user_id).all()
+        
+        product_ids = [item.product_id for item in wishlist_items]
+        
+        # Get full product details
+        products_data = []
+        for item in wishlist_items:
+            product = item.product
+            if product:
+                products_data.append({
+                    'id': product.id,
+                    'slug': product.slug,
+                    'title': product.title,
+                    'price': product.price,
+                    'images': [img.image_url for img in product.images],
+                    'brand': product.brand,
+                    'category': product.category,
+                    'added_at': item.created_at.isoformat()
+                })
+        
+        return jsonify({
+            'wishlist': products_data,
+            'product_ids': product_ids,
+            'count': len(product_ids)
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/wishlist/check/<string:product_id>', methods=['GET'])
+@jwt_required()
+def check_wishlist(product_id):
+    """Check if a specific product is in user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        
+        existing = Wishlists.query.filter_by(user_id=user_id, product_id=product_id).first()
+        
+        return jsonify({
+            'in_wishlist': existing is not None,
+            'product_id': product_id
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

@@ -65,7 +65,7 @@ def _serialize_message(message: Message, current_user_id: int) -> dict:
         {
             'user_id': reaction.user_id,
             'reaction_type': reaction.reaction_type,
-            'timestamp': reaction.timestamp.isoformat(),
+            'timestamp': reaction.timestamp.isoformat() + 'Z',  # UTC marker
         }
         for reaction in message.reactions
     ]
@@ -83,7 +83,7 @@ def _serialize_message(message: Message, current_user_id: int) -> dict:
         'media': media_payload,
         'reply_to': message.reply_to_id,
         'encrypted': message.is_encrypted,
-        'timestamp': message.timestamp.isoformat(),
+        'timestamp': message.timestamp.isoformat() + 'Z',  # UTC marker for proper JS Date parsing
         'is_read': bool(getattr(message, 'read_at', None)),
         'is_own': message.user_id == current_user_id,
         'reactions': reaction_payload,
@@ -295,7 +295,7 @@ def get_conversations():
                     'last_name': other_user.last_name,
                     'avatar': other_user.avatar,
                     'is_online': bool(activity and activity.is_online),
-                    'last_seen': activity.last_seen.isoformat() if activity and activity.last_seen else None,
+                    'last_seen': (activity.last_seen.isoformat() + 'Z') if activity and activity.last_seen else None,
                     'is_close_friend': friendship.is_close_friend if friendship else False,
                     'friendship_id': friendship.id if friendship else None,
                 },
@@ -303,10 +303,10 @@ def get_conversations():
                     'id': last_message.id if last_message else None,
                     'content': last_message.encrypted_content if last_message else None,
                     'sender_id': last_message.user_id if last_message else None,
-                    'timestamp': last_message.timestamp.isoformat() if last_message else None,
+                    'timestamp': (last_message.timestamp.isoformat() + 'Z') if last_message else None,
                 } if last_message else None,
                 'unread_count': 0,
-                'updated_at': conv.updated_at.isoformat(),
+                'updated_at': conv.updated_at.isoformat() + 'Z',
             })
 
         response_data = {'conversations': summaries}
@@ -360,10 +360,10 @@ def ensure_conversation(friend_id: int):
             'avatar': other_user.avatar,
         },
         'is_online': bool(activity and activity.is_online),
-        'last_seen': activity.last_seen.isoformat() if activity and activity.last_seen else None,
+        'last_seen': (activity.last_seen.isoformat() + 'Z') if activity and activity.last_seen else None,
         'is_close_friend': bool(friendship and friendship.is_close_friend),
         'friendship_id': friendship.id if friendship else None,
-        'updated_at': conversation.updated_at.isoformat(),
+        'updated_at': conversation.updated_at.isoformat() + 'Z',
     }), 200
 
 @message_bp.route('/messages/<int:message_id>/reactions', methods=['POST'])

@@ -96,6 +96,85 @@ class EmailService:
         except Exception as e:
             raise EmailError(f"Failed to send email: {str(e)}")
     
+    # ==================== AUTHENTICATION EMAILS ====================
+    
+    def send_verification_otp(self, to_email: str, otp_code: str, display_name: str = None) -> Dict[str, Any]:
+        """
+        Send OTP verification email for account registration
+        
+        Args:
+            to_email: Recipient email address
+            otp_code: 6-digit verification code
+            display_name: User's display name (optional)
+        """
+        greeting = f"Hi {display_name}," if display_name else "Hi there,"
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+            <div style="width: 100%; padding: 40px 0;">
+                <div style="max-width: 480px; margin: 0 auto; background-color: #ffffff; padding: 40px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                    
+                    <!-- Logo/Header -->
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <h1 style="margin: 0; font-size: 28px; color: #1f2937; letter-spacing: -0.5px;">CampoSocial</h1>
+                        <p style="margin: 5px 0 0; color: #6b7280; font-size: 14px;">Verify your email address</p>
+                    </div>
+                    
+                    <!-- Greeting -->
+                    <p style="color: #374151; font-size: 16px; margin-bottom: 20px;">{greeting}</p>
+                    
+                    <p style="color: #374151; font-size: 16px; margin-bottom: 30px;">
+                        Welcome to CampoSocial! Please use the verification code below to complete your registration.
+                    </p>
+                    
+                    <!-- OTP Code Box -->
+                    <div style="background: linear-gradient(135deg, #ff9013 0%, #ff6b00 100%); padding: 30px; border-radius: 12px; text-align: center; margin: 30px 0;">
+                        <p style="margin: 0 0 10px; color: rgba(255,255,255,0.9); font-size: 14px; text-transform: uppercase; letter-spacing: 2px;">Your Verification Code</p>
+                        <p style="margin: 0; color: white; font-size: 40px; font-weight: bold; font-family: 'Courier New', monospace; letter-spacing: 8px;">{otp_code}</p>
+                    </div>
+                    
+                    <!-- Expiry Notice -->
+                    <p style="color: #9ca3af; font-size: 14px; text-align: center; margin: 20px 0;">
+                        This code will expire in <strong style="color: #6b7280;">10 minutes</strong>
+                    </p>
+                    
+                    <!-- Security Notice -->
+                    <p style="margin: 30px 0 0; color: #9ca3af; font-size: 12px; text-align: center;">
+                        If you didn't request this code, you can safely ignore this email.
+                    </p>
+                    
+                    <!-- Footer -->
+                    <div style="text-align: center; color: #9ca3af; font-size: 12px; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                        <p style="margin: 0;">Need help? Contact us at support@camposocial.app</p>
+                        <p style="margin: 10px 0 0;">&copy; {datetime.utcnow().year} CampoSocial. All rights reserved.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Override from_address to use auth@ for verification emails
+        original_from = self.from_address
+        self.from_address = "CampoSocial <auth@camposocial.app>"
+        
+        try:
+            result = self.send_email(
+                to=to_email,
+                subject=f"Your CampoSocial Verification Code: {otp_code}",
+                html=html,
+                tags=[{"name": "category", "value": "email_verification"}]
+            )
+            return result
+        finally:
+            self.from_address = original_from
+    
     # ==================== ORDER EMAILS ====================
     
     def send_order_confirmation(self, order) -> Dict[str, Any]:

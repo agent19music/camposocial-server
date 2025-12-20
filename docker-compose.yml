@@ -23,6 +23,9 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
       - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - SEED_BADGES=${SEED_BADGES:-false}
+      - POSTGRES_HOST=${POSTGRES_HOST:-supabase_db_uniwell}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
     volumes:
       - .:/app
     depends_on:

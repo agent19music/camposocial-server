@@ -9,7 +9,7 @@ import secrets
 import string
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,214 @@ def check_username():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+# ============ Manual Registration with Email Verification ============
+
+def generate_otp():
+    """Generate a 6-digit numeric OTP"""
+    return ''.join(secrets.choice(string.digits) for _ in range(6))
+
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    """
+    Manual signup with email/password.
+    Creates unverified account and sends OTP to email.
+    """
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        password = data.get('password', '')
+        
+        # Validate email
+        if not email or '@' not in email:
+            return jsonify({"error": "Valid email is required"}), 400
+        
+        # Validate password (at least 8 chars with mix)
+        if len(password) < 8:
+            return jsonify({"error": "Password must be at least 8 characters"}), 400
+        
+        # Check if email already exists
+        existing_user = Users.query.filter(func.lower(Users.email) == email).first()
+        if existing_user:
+            if existing_user.email_verified:
+                return jsonify({"error": "An account with this email already exists"}), 409
+            else:
+                # User exists but not verified - resend OTP
+                otp = generate_otp()
+                existing_user.verification_code = otp
+                existing_user.verification_code_expires = datetime.utcnow() + timedelta(minutes=10)
+                existing_user.password = generate_password_hash(password)  # Update password
+                db.session.commit()
+                
+                # Send OTP email
+                try:
+                    from email_service import get_email_service
+                    email_service = get_email_service()
+                    email_service.send_verification_otp(email, otp)
+                except Exception as e:
+                    logger.error(f"Failed to send OTP email: {e}")
+                
+                return jsonify({
+                    "message": "Verification code sent to your email",
+                    "email": email,
+                    "requires_verification": True
+                }), 200
+        
+        # Generate temporary username from email
+        email_prefix = email.split('@')[0]
+        temp_username = f"{email_prefix[:8]}{secrets.token_hex(3)}"
+        while Users.query.filter_by(username=temp_username).first():
+            temp_username = f"{email_prefix[:8]}{secrets.token_hex(3)}"
+        
+        # Generate OTP
+        otp = generate_otp()
+        
+        # Create new unverified user
+        new_user = Users(
+            username=temp_username,
+            email=email,
+            password=generate_password_hash(password),
+            is_oauth_user=False,
+            email_verified=False,
+            verification_code=otp,
+            verification_code_expires=datetime.utcnow() + timedelta(minutes=10),
+            profile_completed=False
+        )
+        
+        db.session.add(new_user)
+        db.session.commit()
+        
+        # Send OTP email
+        try:
+            from email_service import get_email_service
+            email_service = get_email_service()
+            email_service.send_verification_otp(email, otp)
+        except Exception as e:
+            logger.error(f"Failed to send OTP email: {e}")
+            # Continue anyway - user can request resend
+        
+        return jsonify({
+            "message": "Account created. Verification code sent to your email",
+            "email": email,
+            "requires_verification": True
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Registration error: {e}")
+        return jsonify({"error": "Registration failed. Please try again."}), 500
+
+
+@auth_bp.route("/send-otp", methods=["POST"])
+def send_otp():
+    """
+    Send or resend verification OTP to email.
+    """
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+        
+        user = Users.query.filter(func.lower(Users.email) == email).first()
+        if not user:
+            return jsonify({"error": "No account found with this email"}), 404
+        
+        if user.email_verified:
+            return jsonify({"error": "Email is already verified"}), 400
+        
+        # Generate new OTP
+        otp = generate_otp()
+        user.verification_code = otp
+        user.verification_code_expires = datetime.utcnow() + timedelta(minutes=10)
+        db.session.commit()
+        
+        # Send OTP email
+        try:
+            from email_service import get_email_service
+            email_service = get_email_service()
+            email_service.send_verification_otp(email, otp, user.first_name)
+        except Exception as e:
+            logger.error(f"Failed to send OTP email: {e}")
+            return jsonify({"error": "Failed to send verification email"}), 500
+        
+        return jsonify({
+            "message": "Verification code sent to your email",
+            "email": email
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Send OTP error: {e}")
+        return jsonify({"error": "Failed to send OTP"}), 500
+
+
+@auth_bp.route("/verify-otp", methods=["POST"])
+def verify_otp():
+    """
+    Verify OTP and mark email as verified.
+    Returns access token on success.
+    """
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        code = (data.get('code') or '').strip()
+        
+        if not email or not code:
+            return jsonify({"error": "Email and verification code are required"}), 400
+        
+        user = Users.query.filter(func.lower(Users.email) == email).first()
+        if not user:
+            return jsonify({"error": "No account found with this email"}), 404
+        
+        if user.email_verified:
+            return jsonify({"error": "Email is already verified"}), 400
+        
+        # Check code
+        if user.verification_code != code:
+            return jsonify({"error": "Invalid verification code"}), 401
+        
+        # Check expiry
+        if user.verification_code_expires and datetime.utcnow() > user.verification_code_expires:
+            return jsonify({"error": "Verification code has expired. Please request a new one."}), 401
+        
+        # Mark as verified
+        user.email_verified = True
+        user.verification_code = None
+        user.verification_code_expires = None
+        db.session.commit()
+        
+        # Create access token
+        access_token = create_access_token(identity=user.id)
+        
+        response = jsonify({
+            "message": "Email verified successfully",
+            "access_token": access_token,
+            "is_profile_complete": user.profile_completed,
+            "user_id": user.id
+        })
+        
+        # Set HTTP-only cookie
+        cookie_domain = os.environ.get('AUTH_COOKIE_DOMAIN')
+        secure = os.environ.get('FLASK_ENV') == 'production'
+        
+        response.set_cookie(
+            'authToken',
+            access_token,
+            httponly=True,
+            secure=secure,
+            samesite='Lax' if not cookie_domain else 'None',
+            domain=cookie_domain if cookie_domain else None,
+            max_age=86400
+        )
+        
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"Verify OTP error: {e}")
+        return jsonify({"error": "Verification failed"}), 500
+
 # Login user
 @auth_bp.route("/login", methods=["POST"])
 def login():
@@ -52,7 +260,15 @@ def login():
 
     user = Users.query.filter_by(username=username).first()
     if user:
-        if check_password_hash(user.password, password):
+        # Check if non-OAuth user has verified their email
+        if not user.is_oauth_user and not user.email_verified:
+            return jsonify({
+                "error": "Please verify your email before logging in",
+                "requires_verification": True,
+                "email": user.email
+            }), 403
+        
+        if user.password and check_password_hash(user.password, password):
             access_token = create_access_token(identity=user.id)
             
             response = jsonify(access_token=access_token, user_id=user.id)
@@ -217,9 +433,20 @@ def generate_random_username(first_name, last_name):
     return f"{base}{random_suffix}"
 
 # Enhanced OAuth handlers for multiple providers
+# Original callback (for backward compatibility - acts as signup)
 @auth_bp.route("/oauth/google/callback", methods=["POST"])
 def google_oauth_callback():
-    return handle_oauth_callback('google')
+    return handle_oauth_callback('google', mode='signup')
+
+# Separate login endpoint (existing users only)
+@auth_bp.route("/oauth/google/login", methods=["POST"])
+def google_oauth_login():
+    return handle_oauth_callback('google', mode='login')
+
+# Separate signup endpoint (creates new users)
+@auth_bp.route("/oauth/google/signup", methods=["POST"])
+def google_oauth_signup():
+    return handle_oauth_callback('google', mode='signup')
 
 @auth_bp.route("/oauth/github/callback", methods=["POST", "GET"])
 def github_oauth_callback():
@@ -252,7 +479,7 @@ def github_oauth_callback():
             error_description = token_data.get('error_description', 'Unknown error')
             return jsonify({"error": f"Failed to get access token: {error_description}"}), 400
         
-        return handle_oauth_callback('github', access_token)
+        return handle_oauth_callback('github', token=access_token, mode='signup')
     else:
         # Handle POST request with code from frontend
         data = request.get_json()
@@ -282,16 +509,91 @@ def github_oauth_callback():
                 error_description = token_data.get('error_description', 'Unknown error')
                 return jsonify({"error": f"Failed to get access token: {error_description}"}), 400
             
-            return handle_oauth_callback('github', access_token)
+            return handle_oauth_callback('github', token=access_token, mode='signup')
         else:
-            return handle_oauth_callback('github')
+            return handle_oauth_callback('github', mode='signup')
+
+# GitHub separate login/signup endpoints
+@auth_bp.route("/oauth/github/login", methods=["POST"])
+def github_oauth_login():
+    """GitHub OAuth for existing users only"""
+    data = request.get_json() or {}
+    code = data.get('code')
+    
+    if not code:
+        return jsonify({"error": "Authorization code required"}), 400
+    
+    # Exchange code for token
+    client_id = os.environ.get('GITHUB_CLIENT_ID')
+    client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+    
+    if not client_id or not client_secret:
+        return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
+    
+    token_response = requests.post('https://github.com/login/oauth/access_token', {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'code': code
+    }, headers={'Accept': 'application/json'})
+    
+    if token_response.status_code != 200:
+        return jsonify({"error": "Failed to exchange code for token"}), 400
+    
+    token_data = token_response.json()
+    access_token = token_data.get('access_token')
+    
+    if not access_token:
+        return jsonify({"error": "Failed to get access token"}), 400
+    
+    return handle_oauth_callback('github', token=access_token, mode='login')
+
+
+@auth_bp.route("/oauth/github/signup", methods=["POST"])
+def github_oauth_signup():
+    """GitHub OAuth for new users"""
+    data = request.get_json() or {}
+    code = data.get('code')
+    
+    if not code:
+        return jsonify({"error": "Authorization code required"}), 400
+    
+    # Exchange code for token
+    client_id = os.environ.get('GITHUB_CLIENT_ID')
+    client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+    
+    if not client_id or not client_secret:
+        return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
+    
+    token_response = requests.post('https://github.com/login/oauth/access_token', {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'code': code
+    }, headers={'Accept': 'application/json'})
+    
+    if token_response.status_code != 200:
+        return jsonify({"error": "Failed to exchange code for token"}), 400
+    
+    token_data = token_response.json()
+    access_token = token_data.get('access_token')
+    
+    if not access_token:
+        return jsonify({"error": "Failed to get access token"}), 400
+    
+    return handle_oauth_callback('github', token=access_token, mode='signup')
 
 @auth_bp.route("/oauth/twitter/callback", methods=["POST"])
 def twitter_oauth_callback():
     return handle_oauth_callback('twitter')
 
-def handle_oauth_callback(provider, token=None):
-    """Unified OAuth callback handler for all providers"""
+def handle_oauth_callback(provider, token=None, mode='signup'):
+    """
+    Unified OAuth callback handler for all providers.
+    
+    Args:
+        provider: OAuth provider name ('google', 'github', 'twitter')
+        token: Pre-exchanged access token (optional, for GitHub)
+        mode: 'login' (existing users only) or 'signup' (create new users)
+    """
     try:
         print(f"[DEBUG] Starting OAuth callback for provider: {provider}")
         
@@ -459,16 +761,27 @@ def handle_oauth_callback(provider, token=None):
                 existing_user.oauth_provider = provider
                 existing_user.oauth_id = oauth_id
                 existing_user.is_oauth_user = True
+                # OAuth users have verified emails from provider
+                existing_user.email_verified = True
                 db.session.commit()
             
             # User exists, log them in
             access_token = create_access_token(identity=existing_user.id)
             return jsonify({
                 "access_token": access_token,
-                "is_profile_complete": existing_user.profile_completed
+                "is_profile_complete": existing_user.profile_completed,
+                "user_id": existing_user.id
             }), 200
         else:
-            # Create new user
+            # User does not exist
+            if mode == 'login':
+                # Login mode: do not create new users, return error
+                return jsonify({
+                    "error": "No account found with this email. Please sign up first.",
+                    "no_account": True
+                }), 404
+            
+            # Signup mode: create new user
             username = generate_random_username(first_name or 'user', last_name or 'name')
             
             # Ensure username is unique
@@ -485,6 +798,7 @@ def handle_oauth_callback(provider, token=None):
                 oauth_provider=provider,
                 oauth_id=oauth_id,
                 is_oauth_user=True,
+                email_verified=True,  # OAuth users have verified emails from provider
                 profile_completed=False  # Always require profile completion for new OAuth users
             )
             
@@ -495,7 +809,8 @@ def handle_oauth_callback(provider, token=None):
             
             return jsonify({
                 "access_token": access_token,
-                "is_profile_complete": False
+                "is_profile_complete": False,
+                "user_id": new_user.id
             }), 201
             
     except Exception as e:
