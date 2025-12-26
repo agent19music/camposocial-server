@@ -155,6 +155,51 @@ def add_yap():
             yap_hashtag = YapHashtag(yap_id=new_yap.id, hashtag_id=hashtag.id)
             db.session.add(yap_hashtag)
 
+        # Extract and process @mentions from content
+        from models import YapMention, Notification, Follow
+        mention_pattern = r'@(\w+)'
+        mentions = re.findall(mention_pattern, content)
+        
+        mentioned_user_ids = set()  # Track to avoid duplicate mentions
+        for username in mentions:
+            # Find the mentioned user
+            mentioned_user = Users.query.filter(func.lower(Users.username) == username.lower()).first()
+            if not mentioned_user or mentioned_user.id == user_id or mentioned_user.id in mentioned_user_ids:
+                continue  # Skip if user not found, self-mention, or duplicate
+            
+            # Check if user allows being tagged based on who_can_tag setting
+            can_tag = False
+            tag_setting = mentioned_user.who_can_tag or 'everyone'
+            
+            if tag_setting == 'everyone':
+                can_tag = True
+            elif tag_setting == 'followers':
+                # Check if current user follows the mentioned user
+                is_follower = Follow.query.filter_by(
+                    follower_id=user_id,
+                    following_id=mentioned_user.id
+                ).first() is not None
+                can_tag = is_follower
+            # 'nobody' = can_tag stays False
+            
+            if can_tag:
+                # Create mention record
+                yap_mention = YapMention(
+                    yap_id=new_yap.id,
+                    mentioned_user_id=mentioned_user.id
+                )
+                db.session.add(yap_mention)
+                mentioned_user_ids.add(mentioned_user.id)
+                
+                # Create notification for the mentioned user
+                notification = Notification(
+                    type='MENTION',
+                    recipient_id=mentioned_user.id,
+                    sender_id=user_id,
+                    yap_id=new_yap.id
+                )
+                db.session.add(notification)
+
         # Commit the session to finalize changes
         db.session.commit()
 
@@ -355,8 +400,13 @@ def get_specific_yap(yap_id):
                 'id': reply.id,
                 'content': reply.content,
                 'created_at': reply.created_at,
-                'user_id': reply.user_id,
-                'username': reply.user.username  # Include the username of the reply's author
+                'parent_reply_id': reply.parent_reply_id,
+                'user': {
+                    'id': str(reply.user.id),
+                    'username': reply.user.username,
+                    'display_name': reply.user.display_name,
+                    'avatar': reply.user.avatar
+                }
             } for reply in yap.replies],
             'replies_count': len(yap.replies),
             'likes_count': len(yap.likes),
@@ -1024,6 +1074,88 @@ def get_location_suggestions():
         suggestions = [{'name': location[0], 'usage_count': location[1]} for location in locations if location[0]]
         
         return jsonify({'locations': suggestions}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# Get user replies for profile page
+@yap_bp.route('/yap/profile/<string:username>/replies', methods=['GET'])
+def get_user_replies(username):
+    try:
+        # Find user by username
+        user = Users.query.filter_by(username=username).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get pagination parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        
+        # Fetch all replies by this user with the parent yap info
+        replies = Reply.query.filter_by(user_id=user.id).order_by(desc(Reply.created_at)).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        
+        # Serialize replies with parent yap context
+        replies_list = []
+        for reply in replies.items:
+            # Get the parent yap
+            parent_yap = Yap.query.get(reply.yap_id)
+            if not parent_yap:
+                continue  # Skip if parent yap no longer exists
+            
+            # Get parent yap author badges
+            parent_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                UserBadge.user_id == parent_yap.user_id,
+                UserBadge.is_displayed == True
+            ).order_by(UserBadge.display_order).limit(3).all()
+            
+            parent_badges_data = []
+            for user_badge, badge in parent_badges:
+                parent_badges_data.append({
+                    'id': badge.id,
+                    'name': badge.name,
+                    'image_url': badge.image_url,
+                    'is_animated': badge.is_animated
+                })
+            
+            # Format reply with parent yap context
+            replies_list.append({
+                'id': reply.id,
+                'content': reply.content,
+                'created_at': reply.created_at,
+                'parent_reply_id': reply.parent_reply_id,
+                'user': {
+                    'id': str(reply.user.id),
+                    'username': reply.user.username,
+                    'display_name': reply.user.display_name,
+                    'avatar': reply.user.avatar
+                },
+                'parent_yap': {
+                    'id': parent_yap.id,
+                    'content': parent_yap.content,
+                    'timestamp': parent_yap.created_at,
+                    'user_id': parent_yap.user_id,
+                    'display_name': parent_yap.user.display_name,
+                    'username': parent_yap.user.username,
+                    'avatar': parent_yap.user.avatar,
+                    'replies_count': len(parent_yap.replies),
+                    'likes_count': len(parent_yap.likes),
+                    'retweets_count': len(parent_yap.retweets),
+                    'badges': parent_badges_data,
+                    'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in parent_yap.media] if parent_yap.media else []
+                }
+            })
+        
+        return jsonify({
+            'replies': replies_list,
+            'page': replies.page,
+            'pages': replies.pages,
+            'total_replies': replies.total,
+            'has_next': replies.has_next,
+            'has_prev': replies.has_prev
+        }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

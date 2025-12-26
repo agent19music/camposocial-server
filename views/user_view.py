@@ -202,6 +202,68 @@ def update_profile():
     return jsonify({'message': 'Profile updated successfully'})
 
 
+# Get user settings
+@user_bp.route('/settings', methods=['GET'])
+@jwt_required()
+def get_settings():
+    current_user_id = get_jwt_identity()
+    user = Users.query.get(current_user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    return jsonify({
+        'notifications': {
+            'push': user.notify_push if user.notify_push is not None else True,
+            'email': user.notify_email if user.notify_email is not None else True,
+            'messages': user.notify_messages if user.notify_messages is not None else True
+        },
+        'privacy': {
+            'who_can_tag': user.who_can_tag or 'everyone',
+            'is_private': user.is_private if user.is_private is not None else False
+        }
+    }), 200
+
+
+# Update user settings
+@user_bp.route('/settings', methods=['PUT'])
+@jwt_required()
+def update_settings():
+    current_user_id = get_jwt_identity()
+    user = Users.query.get(current_user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    
+    # Update notification settings
+    if 'notifications' in data:
+        notifications = data['notifications']
+        if 'push' in notifications:
+            user.notify_push = bool(notifications['push'])
+        if 'email' in notifications:
+            user.notify_email = bool(notifications['email'])
+        if 'messages' in notifications:
+            user.notify_messages = bool(notifications['messages'])
+    
+    # Update privacy settings
+    if 'privacy' in data:
+        privacy = data['privacy']
+        if 'who_can_tag' in privacy:
+            tag_setting = privacy['who_can_tag']
+            if tag_setting in ['everyone', 'followers', 'nobody']:
+                user.who_can_tag = tag_setting
+            else:
+                return jsonify({'error': 'Invalid who_can_tag value'}), 400
+        if 'is_private' in privacy:
+            user.is_private = bool(privacy['is_private'])
+    
+    db.session.commit()
+    
+    return jsonify({'message': 'Settings updated successfully'}), 200
+
+
 # Delete user
 @user_bp.route("/deleteuser", methods=["DELETE"])
 @jwt_required()

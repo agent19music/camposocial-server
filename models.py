@@ -49,6 +49,15 @@ class Users(db.Model, SerializerMixin):
     # Admin role
     is_superadmin = db.Column(db.Boolean, default=False)      # Super admin access
     
+    # Notification settings
+    notify_push = db.Column(db.Boolean, default=True)          # Push notifications enabled
+    notify_email = db.Column(db.Boolean, default=True)         # Email notifications enabled
+    notify_messages = db.Column(db.Boolean, default=True)      # Message notifications enabled
+    
+    # Privacy settings
+    who_can_tag = db.Column(db.String(20), default='everyone') # 'everyone', 'followers', 'nobody'
+    is_private = db.Column(db.Boolean, default=False)          # Private account
+    
     events = db.relationship('Events', backref='user', lazy=True)
     comments_on_events = db.relationship('Comment_events', backref='user', lazy=True)
     reviews = db.relationship('Reviews', backref='user', lazy=True)
@@ -890,6 +899,26 @@ class YapHashtag(db.Model):
     def __repr__(self):
         return f"<YapHashtag Yap {self.yap_id} Hashtag {self.hashtag.name}>"   
 
+
+# YapMention model (track @username mentions in yaps)
+class YapMention(db.Model):
+    __tablename__ = 'yap_mentions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=False)
+    mentioned_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relationships
+    yap = db.relationship('Yap', backref='mentions', lazy=True)
+    mentioned_user = db.relationship('Users', backref='mentions_received', lazy=True)
+
+    __table_args__ = (
+        db.UniqueConstraint('yap_id', 'mentioned_user_id', name='uq_yap_mention'),
+    )
+
+    def __repr__(self):
+        return f"<YapMention Yap {self.yap_id} User {self.mentioned_user_id}>"
 
 
 class Notification(db.Model):

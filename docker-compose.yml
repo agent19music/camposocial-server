@@ -1,14 +1,27 @@
+# ============================================================================
+# Docker Compose - Development Configuration
+# ============================================================================
+# This file is for LOCAL DEVELOPMENT only.
+# For production, use docker-compose.prod.yml
+#
+# Usage:
+#   docker compose up --build           # Start services
+#   docker compose exec app flask db upgrade  # Run migrations
+#   docker compose down                 # Stop services
+# ============================================================================
 
 services:
   # Flask application service
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: camposocial-server
     ports:
       - "5000:5000"
     environment:
       - FLASK_ENV=${FLASK_ENV:-development}
-      - FLASK_DEBUG=${FLASK_DEBUG:-false}
+      - FLASK_DEBUG=${FLASK_DEBUG:-true}
       - FLASK_APP=app.py
       - DATABASE_URL=${DATABASE_URL}
       - SECRET_KEY=${SECRET_KEY}
@@ -24,17 +37,34 @@ services:
       - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
       - R2_BUCKET_NAME=${R2_BUCKET_NAME}
       - SEED_BADGES=${SEED_BADGES:-false}
-      - POSTGRES_HOST=${POSTGRES_HOST:-supabase_db_uniwell}
+      - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
     volumes:
+      # Mount source code for hot reloading in development
       - .:/app
+      # Prevent overwriting installed packages
+      - /app/__pycache__
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - camposocial-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/camposocial/api/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Development resource limits (generous for debugging)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
-  # Redis service
+  # Redis service for WebSocket message queue and caching
   redis:
     image: redis:7-alpine
     container_name: camposocial-redis
