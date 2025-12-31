@@ -384,7 +384,8 @@ def register_socket_handlers(socketio):
         if recipient_id:
             emit('user_typing', {
                 'user_id': sender_id,
-                'is_typing': is_typing
+                'is_typing': is_typing,
+                'conversation_id': conversation_id  # Include conversation_id for proper filtering
             }, room=f'user_{recipient_id}')
         
         if conversation_id:

@@ -284,6 +284,12 @@ def get_conversations():
                     Friendship.status == 'accepted'
                 )
             ).first()
+            
+            # Get sender's public key for E2EE decryption on client
+            sender_public_key = None
+            if last_message:
+                sender = Users.query.get(last_message.user_id)
+                sender_public_key = sender.public_key if sender else None
 
             summaries.append({
                 'conversation_id': conv.id,
@@ -301,7 +307,11 @@ def get_conversations():
                 },
                 'last_message': {
                     'id': last_message.id if last_message else None,
+                    # Return raw ciphertext for client-side decryption
                     'content': last_message.encrypted_content if last_message else None,
+                    'is_encrypted': last_message.is_encrypted if last_message else False,
+                    'nonce': getattr(last_message, 'nonce', None) if last_message else None,
+                    'sender_public_key': sender_public_key,
                     'sender_id': last_message.user_id if last_message else None,
                     'timestamp': (last_message.timestamp.isoformat() + 'Z') if last_message else None,
                 } if last_message else None,

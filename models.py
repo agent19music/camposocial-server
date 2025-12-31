@@ -1490,6 +1490,7 @@ class BadgeTransaction(db.Model):
     # Transaction status
     status = db.Column(db.String(20), default='PENDING')  # PENDING, COMPLETED, FAILED, CANCELLED
     payment_method = db.Column(db.String(20), default='MPESA')
+    payment_provider = db.Column(db.String(20), default='intasend')  # 'intasend' or 'mpesa'
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime, nullable=True)

@@ -406,8 +406,23 @@ def get_specific_yap(yap_id):
                     'username': reply.user.username,
                     'display_name': reply.user.display_name,
                     'avatar': reply.user.avatar
-                }
-            } for reply in yap.replies],
+                },
+                'likes_count': len([like for like in yap.likes if like.reply_id == reply.id]) if hasattr(reply, 'id') else 0,
+                'child_replies_count': len(reply.child_replies) if hasattr(reply, 'child_replies') else 0,
+                'child_replies': [{
+                    'id': child.id,
+                    'content': child.content,
+                    'created_at': child.created_at,
+                    'parent_reply_id': child.parent_reply_id,
+                    'user': {
+                        'id': str(child.user.id),
+                        'username': child.user.username,
+                        'display_name': child.user.display_name,
+                        'avatar': child.user.avatar
+                    },
+                    'likes_count': 0  # Will be fetched separately if needed
+                } for child in reply.child_replies[:3]] if hasattr(reply, 'child_replies') else []
+            } for reply in yap.replies if not reply.parent_reply_id],  # Only top-level replies
             'replies_count': len(yap.replies),
             'likes_count': len(yap.likes),
             'retweets_count': len(yap.retweets),
@@ -632,6 +647,63 @@ def add_reply(yap_id):
             }
         }), 201
         
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+# Like/Unlike Reply endpoint
+@yap_bp.route('/replies/<int:reply_id>/like', methods=['POST'])
+@jwt_required()
+def toggle_like_reply(reply_id):
+    try:
+        user_id = get_jwt_identity()
+        
+        # Check if reply exists
+        reply = Reply.query.get(reply_id)
+        if not reply:
+            return jsonify({'error': 'Reply not found'}), 404
+            
+        # Check if user already liked this reply
+        existing_like = Like.query.filter_by(user_id=user_id, reply_id=reply_id).first()
+        
+        if existing_like:
+            # Unlike the reply
+            db.session.delete(existing_like)
+            db.session.commit()
+            # Get updated count
+            likes_count = Like.query.filter_by(reply_id=reply_id).count()
+            return jsonify({
+                'message': 'Reply unliked successfully',
+                'liked': False,
+                'likes_count': likes_count
+            }), 200
+        else:
+            # Like the reply
+            new_like = Like(user_id=user_id, reply_id=reply_id)
+            db.session.add(new_like)
+            
+            # Create notification for the reply author (if not self-like)
+            if reply.user_id != user_id:
+                from models import Notification
+                notification = Notification(
+                    type='LIKE',
+                    recipient_id=reply.user_id,
+                    sender_id=user_id,
+                    reply_id=reply_id
+                )
+                db.session.add(notification)
+            
+            db.session.commit()
+            
+            # Get updated count
+            likes_count = Like.query.filter_by(reply_id=reply_id).count()
+            
+            return jsonify({
+                'message': 'Reply liked successfully',
+                'liked': True,
+                'likes_count': likes_count
+            }), 200
+            
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
