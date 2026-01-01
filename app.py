@@ -34,6 +34,17 @@ def create_app():
     database_url = os.getenv('DATABASE_URL', 'sqlite:///test.db')
     if database_url.startswith('postgres://'):
         database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    
+    # Add SSL parameters for Railway/cloud PostgreSQL databases if not already present
+    if database_url.startswith('postgresql://') and '?' not in database_url:
+        # Railway and other cloud providers often require SSL
+        # Check if it's a Railway database (metro.proxy.rlwy.net) or other cloud provider
+        if 'rlwy.net' in database_url or 'railway' in database_url.lower():
+            database_url += '?sslmode=require'
+        elif os.getenv('POSTGRES_SSL_MODE'):
+            # Allow explicit SSL mode override via environment variable
+            database_url += f"?sslmode={os.getenv('POSTGRES_SSL_MODE')}"
+    
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'vsgewvwesvsgevafdsag')

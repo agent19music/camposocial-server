@@ -8,12 +8,16 @@ import base64
 import os
 import boto3
 import re
+import logging
 from websocket_handlers import notify_new_yap
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from sqlalchemy import desc
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import NoCredentialsError, ClientError
 load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 yap_bp = Blueprint('yap', __name__)
 
@@ -24,20 +28,29 @@ R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
 
+# Validate R2 configuration
+if not all([R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME]):
+    logging.warning("R2 configuration incomplete. Image uploads may fail.")
 
-s3_client = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT_URL,
-    aws_access_key_id=R2_ACCESS_KEY_ID,
-    aws_secret_access_key=R2_SECRET_ACCESS_KEY
-)  
+s3_client = None
+r2_client = None
 
-r2_client = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT_URL,
-    aws_access_key_id=R2_ACCESS_KEY_ID,
-    aws_secret_access_key=R2_SECRET_ACCESS_KEY
-)
+if all([R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+    try:
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=R2_ENDPOINT_URL,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY
+        )
+        r2_client = boto3.client(
+            's3',
+            endpoint_url=R2_ENDPOINT_URL,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY
+        )
+    except Exception as e:
+        logging.error(f"Failed to initialize R2 clients: {str(e)}")
 
 def upload_media_to_r2(file_content, file_name, content_type):
     try:
@@ -79,33 +92,81 @@ def add_yap():
         # Handle media uploads if any
         if files:
             for file in files:
-                if file:
+                if file and file.filename:
+                    # Check if file is empty
+                    file.seek(0, os.SEEK_END)
+                    file_size = file.tell()
+                    file.seek(0)  # Reset to beginning
+                    
+                    if file_size == 0:
+                        return jsonify({"error": "Uploaded file is empty"}), 400
+                    
                     filename = secure_filename(file.filename)
-                    file_ext = filename.split('.')[-1].lower()
+                    if not filename:
+                        return jsonify({"error": "Invalid filename"}), 400
+                    
+                    file_ext = filename.split('.')[-1].lower() if '.' in filename else ''
 
                     # Validate media type
-                    if file_ext not in ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avif', 'webp']:
-                        return jsonify({"error": f"Invalid file type: {file_ext}"}), 400
+                    if not file_ext or file_ext not in ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avif', 'webp']:
+                        return jsonify({"error": f"Invalid file type: {file_ext}. Allowed types: jpg, jpeg, png, gif, webp, avif, mp4, mov"}), 400
 
                     # Set media type
                     media_type = 'image' if file_ext in ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif'] else 'video'
 
+                    # Validate R2 client is initialized
+                    if not s3_client:
+                        logger.error("R2 client not initialized. Check environment variables.")
+                        return jsonify({"error": "Image upload service not configured"}), 500
+                    
                     # Define the S3 (R2) file path
                     s3_path = f"yaps/{user_id}/{filename}"
+                    
+                    # Determine content type
+                    content_type_map = {
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg',
+                        'png': 'image/png',
+                        'gif': 'image/gif',
+                        'webp': 'image/webp',
+                        'avif': 'image/avif',
+                        'mp4': 'video/mp4',
+                        'mov': 'video/quicktime'
+                    }
+                    content_type = content_type_map.get(file_ext, 'application/octet-stream')
 
+                    # Reset file pointer to beginning (important for file objects)
+                    file.seek(0)
+                    
                     # Upload the file to the R2 bucket
                     try:
+                        # R2 doesn't support ACLs, so we don't include ExtraArgs with ACL
                         s3_client.upload_fileobj(
                             file,
-                            os.getenv('R2_BUCKET_NAME'),
+                            R2_BUCKET_NAME,
                             s3_path,
-                            ExtraArgs={'ACL': 'public-read'}
+                            ExtraArgs={
+                                'ContentType': content_type,
+                                'CacheControl': 'max-age=31536000'  # Cache for 1 year
+                            }
                         )
+                        logger.info(f"Successfully uploaded media to R2: {s3_path}")
+                    except NoCredentialsError:
+                        logger.error("R2 credentials are missing or invalid")
+                        return jsonify({"error": "Image upload service authentication failed"}), 500
+                    except ClientError as e:
+                        logger.error(f"R2 client error: {str(e)}")
+                        return jsonify({"error": f"Error uploading media: {str(e)}"}), 500
                     except Exception as e:
+                        logger.error(f"Unexpected error uploading media: {str(e)}", exc_info=True)
                         return jsonify({"error": f"Error uploading media: {str(e)}"}), 500
 
                     # Generate the R2 URL for the uploaded media
-                    r2_url = f"{IMAGE_PREFIX}/{s3_path}"
+                    if IMAGE_PREFIX:
+                        r2_url = f"{IMAGE_PREFIX}/{s3_path}"
+                    else:
+                        # Fallback to R2 endpoint URL if IMAGE_PREFIX is not set
+                        r2_url = f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{s3_path}"
 
                     # Add the uploaded media details to the list
                     uploaded_media.append({
@@ -214,7 +275,12 @@ def add_yap():
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in add_yap: {str(e)}", exc_info=True)
+        # Don't expose internal error details in production
+        error_message = "Failed to create yap. Please try again."
+        if os.getenv('FLASK_DEBUG', 'false').lower() == 'true':
+            error_message = str(e)
+        return jsonify({"error": error_message}), 500
 
 
 @yap_bp.route('/yaps', methods=['GET'])
