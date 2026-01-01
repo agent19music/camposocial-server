@@ -539,7 +539,7 @@ class ReviewReply(db.Model):
     __tablename__ = 'review_replies'
     
     id = db.Column(db.String, primary_key=True, default=cuid)
-    review_id = db.Column(db.String, db.ForeignKey('reviews.id'), nullable=False)
+    review_id = db.Column(db.Integer, db.ForeignKey('reviews.id'), nullable=False)
     seller_id = db.Column(db.String, db.ForeignKey('sellers.id'), nullable=False)
     
     text = db.Column(db.Text, nullable=False)
