@@ -1,0 +1,116 @@
+# ============================================================================
+# Docker Compose - Production Configuration
+# ============================================================================
+# This file is for PRODUCTION deployment.
+# For local development, use docker-compose.yml
+#
+# Prerequisites:
+#   1. Build and tag your image: docker build -t camposocial-server:latest .
+#   2. Run migrations FIRST: 
+#      docker run --rm --env-file .env.prod -e MIGRATE_ONLY=true camposocial-server:latest
+#   3. Then deploy: docker compose -f docker-compose.prod.yml up -d
+#
+# Environment variables should be set in .env.prod file (not committed to git)
+# ============================================================================
+
+services:
+  # Flask application service
+  app:
+    image: camposocial-server:${IMAGE_TAG:-latest}
+    container_name: camposocial-server
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_DEBUG=false
+      - FLASK_APP=app.py
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=${REDIS_DB:-0}
+      - USE_REDIS_QUEUE=true
+      - SOCKETIO_ASYNC_MODE=eventlet
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - SEED_BADGES=false
+      - FRONTEND_URL=${FRONTEND_URL}
+      - SELLER_DASHBOARD_URL=${SELLER_DASHBOARD_URL}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+    # No volume mounts in production - use the built image
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - camposocial-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/camposocial/api/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Production resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis service for WebSocket message queue and caching
+  redis:
+    image: redis:7-alpine
+    container_name: camposocial-redis
+    # Don't expose Redis port in production (only internal network access)
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 100mb --maxmemory-policy allkeys-lru
+    networks:
+      - camposocial-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  camposocial-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+

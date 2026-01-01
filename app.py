@@ -60,7 +60,13 @@ def create_app():
         'http://localhost:8888',
         'http://127.0.0.1:8888',
         'https://camposocial.vercel.app',
+        'https://www.camposocial.vercel.app',
+        'https://camposocial.app',
+        'https://www.camposocial.app',
         'https://seller.camposocial.app',
+        'https://www.seller.camposocial.app',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
     }
 
     # Load additional origins from environment variables
@@ -186,6 +192,7 @@ def create_app():
     app.register_blueprint(yap_bp, url_prefix='/camposocial/api')
     app.register_blueprint(friends_bp, url_prefix='/camposocial/api')
     app.register_blueprint(message_bp, url_prefix='/camposocial/api')
+    app.register_blueprint(seller_bp, url_prefix='/camposocial/api')
     
     # Register media handling blueprint
     from views.media_view import media_bp

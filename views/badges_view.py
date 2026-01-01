@@ -1,7 +1,7 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, Badge, UserBadge, BadgeTransaction, Users
-from mpesa_service import mpesa_service
+from badge_payment_service import get_badge_payment_service, get_current_provider_name
 from datetime import datetime
 import uuid
 
@@ -69,7 +69,7 @@ def get_user_badges(user_id):
 @badges_bp.route('/purchase', methods=['POST'])
 @jwt_required()
 def initiate_badge_purchase():
-    """Initiate badge purchase with M-Pesa STK Push"""
+    """Initiate badge purchase with M-Pesa STK Push (supports IntaSend or native M-Pesa)"""
     try:
         current_user_id = get_jwt_identity()
         data = request.get_json()
@@ -93,45 +93,60 @@ def initiate_badge_purchase():
         if existing_badge:
             return jsonify({'success': False, 'error': 'You already own this badge'}), 400
         
-        # Generate unique account reference
-        account_reference = f"BADGE_{badge_id}_{current_user_id}_{int(datetime.now().timestamp())}"
-        transaction_desc = f"Badge Purchase: {badge.name}"
+        # Get user for payment details
+        user = Users.query.get(current_user_id)
         
-        # Create transaction record
+        # Generate unique order reference
+        order_ref = f"BADGE_{badge_id}_{current_user_id}_{int(datetime.now().timestamp())}"
+        
+        # Get the configured payment provider
+        payment_service = get_badge_payment_service()
+        provider_name = get_current_provider_name()
+        current_app.logger.info(f"Using payment provider: {provider_name}")
+        
+        # Create transaction record with provider info
         transaction = BadgeTransaction(
             user_id=current_user_id,
             badge_id=badge_id,
             phone_number=phone_number,
             amount=badge.price_ksh,
-            status='PENDING'
+            status='PENDING',
+            payment_provider=provider_name
         )
         db.session.add(transaction)
         db.session.flush()  # Get the transaction ID
         
-        # Initiate M-Pesa STK Push
-        mpesa_response = mpesa_service.stk_push(
+        # Initiate M-Pesa STK Push via configured provider
+        customer_name = f"{user.first_name} {user.last_name}" if user else None
+        payment_result = payment_service.initiate_payment(
             phone_number=phone_number,
             amount=badge.price_ksh,
-            account_reference=account_reference,
-            transaction_desc=transaction_desc
+            order_ref=order_ref,
+            description=f"Badge: {badge.name}",
+            email=user.email if user else None,
+            customer_name=customer_name
         )
         
-        # Update transaction with checkout request ID
-        if mpesa_response.get('CheckoutRequestID'):
-            transaction.checkout_request_id = mpesa_response['CheckoutRequestID']
+        if payment_result.success and payment_result.invoice_id:
+            # Update transaction with checkout info
+            transaction.checkout_request_id = payment_result.invoice_id
             db.session.commit()
             
             return jsonify({
                 'success': True,
                 'message': 'Payment initiated. Please complete payment on your phone.',
                 'transaction_id': transaction.id,
-                'checkout_request_id': mpesa_response['CheckoutRequestID']
+                'invoice_id': payment_result.invoice_id,
+                'state': payment_result.state,
+                'provider': provider_name
             }), 200
         else:
+            # Payment initiation failed
             transaction.status = 'FAILED'
-            transaction.error_message = mpesa_response.get('errorMessage', 'Failed to initiate payment')
+            transaction.error_message = payment_result.error_message
             db.session.commit()
             
+            current_app.logger.error(f"Payment initiation failed: {payment_result.error_message}")
             return jsonify({
                 'success': False,
                 'error': 'Failed to initiate payment. Please try again.'
@@ -139,6 +154,7 @@ def initiate_badge_purchase():
             
     except Exception as e:
         db.session.rollback()
+        current_app.logger.error(f"Badge purchase error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @badges_bp.route('/transaction/<int:transaction_id>/status', methods=['GET'])
@@ -169,62 +185,43 @@ def check_transaction_status(transaction_id):
                 }
             }), 200
         
-        # Query M-Pesa for transaction status
+        # Query payment provider for status
         if transaction.checkout_request_id:
-            mpesa_response = mpesa_service.query_transaction_status(transaction.checkout_request_id)
+            payment_service = get_badge_payment_service()
             
-            if mpesa_response.get('ResultCode') == '0':  # Success
-                # Update transaction as completed
-                transaction.status = 'COMPLETED'
-                transaction.completed_at = datetime.utcnow()
-                transaction.mpesa_receipt_number = mpesa_response.get('MpesaReceiptNumber')
+            try:
+                status_result = payment_service.check_payment_status(transaction.checkout_request_id)
                 
-                # Grant badge to user
-                user_badge = UserBadge(
-                    user_id=current_user_id,
-                    badge_id=transaction.badge_id,
-                    is_displayed=True,
-                    display_order=0  # New badges get priority display
-                )
-                
-                # Adjust display order of existing badges
-                existing_badges = UserBadge.query.filter_by(
-                    user_id=current_user_id,
-                    is_displayed=True
-                ).all()
-                
-                for i, existing_badge in enumerate(existing_badges):
-                    existing_badge.display_order = i + 1
-                
-                db.session.add(user_badge)
-                db.session.commit()
-                
-                return jsonify({
-                    'success': True,
-                    'status': 'COMPLETED',
-                    'message': 'Badge purchased successfully!'
-                }), 200
-                
-            elif mpesa_response.get('ResultCode') == '1032':  # Cancelled by user
-                transaction.status = 'CANCELLED'
-                db.session.commit()
-                
-                return jsonify({
-                    'success': False,
-                    'status': 'CANCELLED',
-                    'message': 'Payment was cancelled'
-                }), 200
-                
-            elif mpesa_response.get('ResultCode'):  # Other error
-                transaction.status = 'FAILED'
-                transaction.error_message = mpesa_response.get('ResultDesc', 'Payment failed')
-                db.session.commit()
-                
-                return jsonify({
-                    'success': False,
-                    'status': 'FAILED',
-                    'message': mpesa_response.get('ResultDesc', 'Payment failed')
-                }), 200
+                if status_result.completed:
+                    # Update transaction as completed
+                    transaction.status = 'COMPLETED'
+                    transaction.completed_at = datetime.utcnow()
+                    transaction.mpesa_receipt_number = status_result.receipt_number
+                    
+                    # Grant badge to user
+                    _grant_badge_to_user(transaction.user_id, transaction.badge_id)
+                    db.session.commit()
+                    
+                    return jsonify({
+                        'success': True,
+                        'status': 'COMPLETED',
+                        'message': 'Badge purchased successfully!'
+                    }), 200
+                    
+                elif status_result.failed:
+                    transaction.status = 'FAILED'
+                    transaction.error_message = status_result.error_message or 'Payment failed'
+                    db.session.commit()
+                    
+                    return jsonify({
+                        'success': False,
+                        'status': 'FAILED',
+                        'message': transaction.error_message
+                    }), 200
+                    
+            except Exception as e:
+                current_app.logger.error(f"Error checking payment status: {str(e)}")
+                pass  # Continue with pending status
         
         # Still pending
         return jsonify({
@@ -274,69 +271,70 @@ def manage_badge_display():
         db.session.rollback()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@badges_bp.route('/callback', methods=['POST'])
-def mpesa_callback():
-    """Handle M-Pesa payment callbacks"""
+@badges_bp.route('/webhook/intasend', methods=['POST'])
+def intasend_webhook():
+    """Handle IntaSend payment webhooks for badge purchases"""
     try:
-        data = request.get_json()
+        from intasend_service import get_intasend_service
         
-        # Extract callback data
-        callback_data = data.get('Body', {}).get('stkCallback', {})
-        checkout_request_id = callback_data.get('CheckoutRequestID')
-        result_code = callback_data.get('ResultCode')
-        result_desc = callback_data.get('ResultDesc')
+        payload = request.get_json()
+        signature = request.headers.get('X-IntaSend-Signature', '')
         
-        if not checkout_request_id:
-            return jsonify({'success': False, 'error': 'Invalid callback data'}), 400
+        # Get IntaSend service for webhook parsing
+        intasend = get_intasend_service()
+        raw_body = request.get_data(as_text=True)
         
-        # Find the transaction
+        # Optionally verify signature (skip if webhook secret not configured)
+        # if not intasend.verify_webhook_signature(raw_body, signature):
+        #     return jsonify({'success': False, 'error': 'Invalid signature'}), 401
+        
+        # Parse webhook data
+        event_data = intasend.parse_webhook_payload(payload)
+        invoice_id = event_data.get('invoice_id')
+        state = event_data.get('state', '').upper()
+        api_ref = event_data.get('api_ref', '')
+        
+        current_app.logger.info(f"IntaSend webhook received: invoice_id={invoice_id}, state={state}")
+        
+        if not invoice_id:
+            return jsonify({'success': False, 'error': 'Invalid webhook data'}), 400
+        
+        # Find the transaction by invoice_id
         transaction = BadgeTransaction.query.filter_by(
-            checkout_request_id=checkout_request_id
+            checkout_request_id=invoice_id
         ).first()
         
         if not transaction:
-            return jsonify({'success': False, 'error': 'Transaction not found'}), 404
+            # Try to find by api_ref (order_ref we created)
+            # Format: BADGE_{badge_id}_{user_id}_{timestamp}
+            if api_ref.startswith('BADGE_'):
+                parts = api_ref.split('_')
+                if len(parts) >= 3:
+                    badge_id = parts[1]
+                    user_id = parts[2]
+                    transaction = BadgeTransaction.query.filter_by(
+                        badge_id=badge_id,
+                        user_id=user_id,
+                        status='PENDING'
+                    ).first()
         
-        if result_code == 0:  # Success
-            # Extract callback metadata
-            callback_metadata = callback_data.get('CallbackMetadata', {}).get('Item', [])
-            mpesa_receipt_number = None
-            transaction_id = None
-            
-            for item in callback_metadata:
-                if item.get('Name') == 'MpesaReceiptNumber':
-                    mpesa_receipt_number = item.get('Value')
-                elif item.get('Name') == 'TransactionId':
-                    transaction_id = item.get('Value')
-            
-            # Update transaction
+        if not transaction:
+            current_app.logger.warning(f"IntaSend webhook: Transaction not found for invoice_id={invoice_id}")
+            return jsonify({'success': True, 'message': 'Transaction not found, ignoring'}), 200
+        
+        if state == 'COMPLETE':
             transaction.status = 'COMPLETED'
             transaction.completed_at = datetime.utcnow()
-            transaction.mpesa_receipt_number = mpesa_receipt_number
-            transaction.mpesa_transaction_id = transaction_id
+            transaction.mpesa_receipt_number = event_data.get('raw_response', {}).get('invoice', {}).get('mpesa_reference')
             
             # Grant badge to user
-            user_badge = UserBadge(
-                user_id=transaction.user_id,
-                badge_id=transaction.badge_id,
-                is_displayed=True,
-                display_order=0
-            )
+            _grant_badge_to_user(transaction.user_id, transaction.badge_id)
+            current_app.logger.info(f"Badge granted to user {transaction.user_id} via IntaSend webhook")
             
-            # Adjust display order of existing badges
-            existing_badges = UserBadge.query.filter_by(
-                user_id=transaction.user_id,
-                is_displayed=True
-            ).all()
-            
-            for i, existing_badge in enumerate(existing_badges):
-                existing_badge.display_order = i + 1
-            
-            db.session.add(user_badge)
-            
-        else:  # Failed
+        elif state == 'FAILED':
             transaction.status = 'FAILED'
-            transaction.error_message = result_desc
+            transaction.error_message = event_data.get('failed_reason', 'Payment failed')
+            current_app.logger.info(f"IntaSend payment failed for transaction {transaction.id}")
         
         db.session.commit()
         
@@ -344,4 +342,110 @@ def mpesa_callback():
         
     except Exception as e:
         db.session.rollback()
+        current_app.logger.error(f"IntaSend webhook error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@badges_bp.route('/webhook/mpesa', methods=['POST'])
+def mpesa_webhook():
+    """Handle native M-Pesa callback for badge purchases"""
+    try:
+        payload = request.get_json()
+        current_app.logger.info(f"M-Pesa callback received: {payload}")
+        
+        # M-Pesa callback structure
+        # {
+        #   "Body": {
+        #     "stkCallback": {
+        #       "MerchantRequestID": "...",
+        #       "CheckoutRequestID": "...",
+        #       "ResultCode": 0,
+        #       "ResultDesc": "...",
+        #       "CallbackMetadata": { "Item": [...] }
+        #     }
+        #   }
+        # }
+        
+        stk_callback = payload.get('Body', {}).get('stkCallback', {})
+        checkout_request_id = stk_callback.get('CheckoutRequestID')
+        result_code = stk_callback.get('ResultCode')
+        result_desc = stk_callback.get('ResultDesc', '')
+        
+        if not checkout_request_id:
+            current_app.logger.warning("M-Pesa callback: Missing CheckoutRequestID")
+            return jsonify({'success': False, 'error': 'Invalid callback data'}), 400
+        
+        # Find the transaction
+        transaction = BadgeTransaction.query.filter_by(
+            checkout_request_id=checkout_request_id,
+            payment_provider='mpesa'
+        ).first()
+        
+        if not transaction:
+            current_app.logger.warning(f"M-Pesa callback: Transaction not found for {checkout_request_id}")
+            return jsonify({'success': True, 'message': 'Transaction not found, ignoring'}), 200
+        
+        if result_code == 0:
+            # Success - extract receipt number from metadata
+            callback_metadata = stk_callback.get('CallbackMetadata', {}).get('Item', [])
+            receipt_number = None
+            for item in callback_metadata:
+                if item.get('Name') == 'MpesaReceiptNumber':
+                    receipt_number = item.get('Value')
+                    break
+            
+            transaction.status = 'COMPLETED'
+            transaction.completed_at = datetime.utcnow()
+            transaction.mpesa_receipt_number = receipt_number
+            
+            # Grant badge to user
+            _grant_badge_to_user(transaction.user_id, transaction.badge_id)
+            current_app.logger.info(f"Badge granted to user {transaction.user_id} via M-Pesa callback")
+            
+        elif result_code == 1032:
+            # User cancelled
+            transaction.status = 'CANCELLED'
+            transaction.error_message = 'Transaction cancelled by user'
+            current_app.logger.info(f"M-Pesa payment cancelled for transaction {transaction.id}")
+            
+        else:
+            # Other failure
+            transaction.status = 'FAILED'
+            transaction.error_message = result_desc or 'Payment failed'
+            current_app.logger.info(f"M-Pesa payment failed for transaction {transaction.id}: {result_desc}")
+        
+        db.session.commit()
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"M-Pesa callback error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _grant_badge_to_user(user_id: int, badge_id: int):
+    """Helper to grant a badge to a user"""
+    # Check if user already has this badge
+    existing = UserBadge.query.filter_by(user_id=user_id, badge_id=badge_id).first()
+    if existing:
+        return
+    
+    # Grant badge to user
+    user_badge = UserBadge(
+        user_id=user_id,
+        badge_id=badge_id,
+        is_displayed=True,
+        display_order=0  # New badges get priority display
+    )
+    
+    # Adjust display order of existing badges
+    existing_badges = UserBadge.query.filter_by(
+        user_id=user_id,
+        is_displayed=True
+    ).all()
+    
+    for i, existing_badge in enumerate(existing_badges):
+        existing_badge.display_order = i + 1
+    
+    db.session.add(user_badge)

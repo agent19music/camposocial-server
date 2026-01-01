@@ -1,5 +1,68 @@
+# ============================================================================
+# CampoSocial Server - Git Ignore Configuration
+# ============================================================================
+
+# Environment files (contain secrets - NEVER commit)
 .env
-/migrations
-/instance
+.env.local
+.env.*.local
+.env.prod
+.env.production
+
+# Virtual environments
 /venv
 /.venv
+env/
+ENV/
+
+# Local database files (development only)
+/instance
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Migration cache (but NOT the migration files themselves)
+# IMPORTANT: migrations/versions/*.py files MUST be committed
+migrations/versions/__pycache__/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/

@@ -248,6 +248,42 @@ def get_personalized_recommendations(user_id, content_type='mixed'):
 
 # ============= Trending API Endpoints =============
 
+@trending_bp.route('/trending/hashtags', methods=['GET'])
+def get_trending_hashtags():
+    """Get trending hashtags (public endpoint, no auth required)"""
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)  # Cap at 50
+        
+        cutoff_time = datetime.utcnow() - timedelta(hours=48)
+        
+        # Get trending hashtags with yap counts
+        trending_hashtags = db.session.query(
+            Hashtag.name,
+            func.count(YapHashtag.id).label('count')
+        ).join(
+            YapHashtag, YapHashtag.hashtag_id == Hashtag.id
+        ).join(
+            Yap, YapHashtag.yap_id == Yap.id
+        ).filter(
+            Yap.created_at >= cutoff_time
+        ).group_by(Hashtag.id, Hashtag.name).order_by(
+            func.count(YapHashtag.id).desc()
+        ).limit(limit).all()
+        
+        hashtags = [
+            {'name': name, 'count': count}
+            for name, count in trending_hashtags
+        ]
+        
+        return jsonify({
+            'hashtags': hashtags,
+            'updated_at': datetime.utcnow().isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @trending_bp.route('/trending/all', methods=['GET'])
 @jwt_required()
 def get_all_trending():

@@ -91,6 +91,7 @@ def get_products():
         result = [
             {
                 'id': product.id,
+                'slug': product.slug,  # SEO-friendly URL slug
                 'title': product.title,
                 'description': product.description,
                 'contact_info': product.contact_info,
@@ -256,12 +257,15 @@ def get_seller(seller_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Route to get a specific product by id
-@marketplace_bp.route('/products/<string:product_id>', methods=['GET'])
-def get_single_product(product_id):
+# Route to get a specific product by slug or id
+@marketplace_bp.route('/products/<string:identifier>', methods=['GET'])
+def get_single_product(identifier):
     try:
-        # Fetch the product by ID
-        product = Products.query.filter_by(id=product_id).first()
+        # Try to find by slug first (preferred), then fall back to ID
+        product = Products.query.filter_by(slug=identifier).first()
+        if not product:
+            # Fallback to ID for backwards compatibility
+            product = Products.query.filter_by(id=identifier).first()
         if not product:
             return jsonify({"error": "Product not found"}), 404
 
@@ -295,6 +299,7 @@ def get_single_product(product_id):
         # Structure the product data
         product_data = {
             "id": product.id,
+            "slug": product.slug,  # SEO-friendly URL slug
             'average_rating': product.average_rating(),
             "title": product.title,
             "description": product.description,
@@ -302,12 +307,22 @@ def get_single_product(product_id):
             "category": product.category,
             "contact_info": product.contact_info,
             "brand": product.brand,
-            "created_at": product.created_at,
-            "updated_at": product.updated_at,
+            "created_at": product.created_at.isoformat() if product.created_at else None,
+            "updated_at": product.updated_at.isoformat() if product.updated_at else None,
             "seller_id": product.seller_id,
-            "sellerName": product.seller.display_name,
-            "sellerAvatar" : product.seller.avatar,
-            "sellerIsVerified": product.seller.is_verified,
+            # Flat fields for backwards compatibility
+            "sellerName": product.seller.display_name if product.seller else None,
+            "sellerAvatar": product.seller.avatar if product.seller else None,
+            "sellerIsVerified": product.seller.is_verified if product.seller else False,
+            # Nested seller object for frontend
+            "seller": {
+                "id": product.seller.id if product.seller else None,
+                "name": product.seller.display_name if product.seller else None,
+                "avatar": product.seller.avatar if product.seller else None,
+                "is_verified": product.seller.is_verified if product.seller else False,
+                "sales": product.seller.total_sales() if product.seller else 0,
+                "rating": 4.5  # TODO: Calculate from reviews
+            } if product.seller else None,
             "images": images,
             "variations": variations,
             "reviews": reviews,
@@ -464,7 +479,8 @@ def create_order():
         phone = data.get('phone')
         address = data.get('address') 
         total_price = data.get('total_price')
-
+        discount_code = data.get('discount_code')
+        payment_mode = data.get('payment_mode', 'pay_before')  # pay_before, pay_on_delivery
 
         if not all([first_name, last_name, email, phone, address]):
             return jsonify({'error': 'Missing customer details'}), 400
@@ -474,6 +490,32 @@ def create_order():
         if not cart or not cart.cart_items:
             return jsonify({'error': 'Cart is empty'}), 400
 
+        # Calculate cart total
+        cart_total = 0
+        for cart_item in cart.cart_items:
+            product = cart_item.product
+            if product:
+                cart_total += product.price * cart_item.quantity
+        
+        # Apply discount if provided
+        discount_amount = 0
+        applied_discount = None
+        if discount_code:
+            from models import Discount
+            discount = Discount.query.filter_by(code=discount_code.upper().strip()).first()
+            if discount and discount.is_valid():
+                discount_amount = discount.calculate_discount(cart_total)
+                applied_discount = discount
+        
+        final_total = cart_total - discount_amount
+        if total_price and abs(float(total_price) - final_total) > 1:
+            # Client-side total mismatch - recalculate
+            final_total = cart_total - discount_amount
+
+        # Generate ticket number
+        from cuid import cuid
+        ticket_number = f"CS-{datetime.utcnow().strftime('%Y%m%d')}-{cuid()[-6:].upper()}"
+
         # Create the order
         order = Order(
             user_id=current_user_id,
@@ -482,29 +524,201 @@ def create_order():
             email=email,
             phone=phone,
             address=address,
-            total_price=total_price  # Calculate total price from cart
+            total_price=final_total,
+            payment_mode=payment_mode,
+            discount_code=discount_code.upper().strip() if discount_code else None,
+            discount_amount=discount_amount,
+            ticket_number=ticket_number,
+            status='pending',
+            paid=False if payment_mode == 'pay_before' else None
         )
         db.session.add(order)
         db.session.commit()  # Commit to get the order ID
 
-        # Copy cart items to order items
+        # Copy cart items to order items with seller tracking
         for cart_item in cart.cart_items:
-            order_item = OrderItem(
-                order_id=order.id,
-                product_id=cart_item.product_id,
-                quantity=cart_item.quantity 
-            )
-            db.session.add(order_item)
+            product = cart_item.product
+            if product:
+                order_item = OrderItem(
+                    order_id=order.id,
+                    product_id=cart_item.product_id,
+                    quantity=cart_item.quantity,
+                    seller_id=product.seller_id,
+                    price_at_purchase=product.price,
+                    product_variation_id=cart_item.variation_id if hasattr(cart_item, 'variation_id') else None
+                )
+                db.session.add(order_item)
 
+        # Update discount usage count if applied
+        if applied_discount:
+            applied_discount.current_uses += 1
+        
         # Clear the cart after successful order creation
+        for item in cart.cart_items:
+            db.session.delete(item)
+        
         db.session.commit()
 
-        return jsonify({'message': 'Order created successfully', 'order_id': order.id}), 201
+        return jsonify({
+            'message': 'Order created successfully', 
+            'order_id': order.id,
+            'ticket_number': ticket_number,
+            'total_price': final_total,
+            'discount_applied': discount_amount > 0,
+            'discount_amount': discount_amount,
+            'payment_mode': payment_mode
+        }), 201
 
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': 'Failed to create order', 'details': str(e)}), 500
-    
+
+
+@marketplace_bp.route('/validate_discount', methods=['POST'])
+@jwt_required()
+def validate_discount():
+    """Validate a discount code and calculate discount amount"""
+    try:
+        data = request.get_json()
+        code = data.get('code', '').upper().strip()
+        cart_total = data.get('cart_total', 0)
+        
+        if not code:
+            return jsonify({'error': 'Discount code required'}), 400
+        
+        from models import Discount
+        discount = Discount.query.filter_by(code=code).first()
+        
+        if not discount:
+            return jsonify({'valid': False, 'error': 'Invalid discount code'}), 400
+        
+        if not discount.is_valid():
+            if discount.max_uses and discount.current_uses >= discount.max_uses:
+                return jsonify({'valid': False, 'error': 'Discount code has been fully redeemed'}), 400
+            if discount.expires_at and datetime.utcnow() > discount.expires_at:
+                return jsonify({'valid': False, 'error': 'Discount code has expired'}), 400
+            return jsonify({'valid': False, 'error': 'Discount code is not active'}), 400
+        
+        if cart_total < discount.min_order_amount:
+            return jsonify({
+                'valid': False, 
+                'error': f'Minimum order amount of KES {discount.min_order_amount} required'
+            }), 400
+        
+        discount_amount = discount.calculate_discount(cart_total)
+        
+        return jsonify({
+            'valid': True,
+            'code': discount.code,
+            'discount_type': discount.discount_type,
+            'value': discount.value,
+            'discount_amount': discount_amount,
+            'final_total': cart_total - discount_amount
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/my_orders', methods=['GET'])
+@jwt_required()
+def get_user_orders():
+    """Get current user's order history"""
+    try:
+        current_user_id = get_jwt_identity()
+        
+        orders = Order.query.filter_by(user_id=current_user_id).order_by(
+            Order.created_at.desc()
+        ).all()
+        
+        result = [{
+            'id': order.id,
+            'ticket_number': getattr(order, 'ticket_number', None),
+            'status': getattr(order, 'status', 'pending'),
+            'paid': order.paid,
+            'payment_mode': getattr(order, 'payment_mode', 'pay_before'),
+            'total_price': order.total_price,
+            'discount_amount': getattr(order, 'discount_amount', 0),
+            'tracking_number': getattr(order, 'tracking_number', None),
+            'shipping_carrier': getattr(order, 'shipping_carrier', None),
+            'items': [{
+                'product_id': item.product_id,
+                'product_title': item.product.title if item.product else None,
+                'product_image': item.product.images[0].image_url if item.product and item.product.images else None,
+                'quantity': item.quantity,
+                'price': getattr(item, 'price_at_purchase', None) or (item.product.price if item.product else 0)
+            } for item in order.order_items],
+            'created_at': order.created_at.isoformat()
+        } for order in orders]
+        
+        return jsonify({
+            'orders': result,
+            'count': len(result)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/request_refund', methods=['POST'])
+@jwt_required()
+def request_refund():
+    """Customer refund request"""
+    try:
+        from models import Refund
+        
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        order_id = data.get('order_id')
+        reason = data.get('reason', '').strip()
+        amount = data.get('amount')
+        
+        if not order_id or not reason:
+            return jsonify({'error': 'Order ID and reason required'}), 400
+        
+        order = Order.query.get(order_id)
+        if not order:
+            return jsonify({'error': 'Order not found'}), 404
+        
+        if order.user_id != current_user_id:
+            return jsonify({'error': 'Not authorized'}), 403
+        
+        if not order.paid:
+            return jsonify({'error': 'Cannot refund unpaid order'}), 400
+        
+        # Check for existing pending refund
+        existing = Refund.query.filter_by(order_id=order_id, status='pending').first()
+        if existing:
+            return jsonify({'error': 'Refund request already pending'}), 400
+        
+        # Default to full refund if amount not specified
+        refund_amount = amount if amount else order.total_price
+        
+        refund = Refund(
+            order_id=order_id,
+            user_id=current_user_id,
+            amount=refund_amount,
+            reason=reason
+        )
+        
+        db.session.add(refund)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Refund request submitted',
+            'refund_id': refund.id,
+            'status': 'pending'
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== PAYSTACK PAYMENT (LEGACY) ====================
+
+
 @marketplace_bp.route('/paystack/initialize_payment', methods=['POST'])
 @jwt_required()
 def initialize_payment():
@@ -567,7 +781,215 @@ def verify_payment():
         else:
             return jsonify({"error": "Order not found"}), 404
 
-    return jsonify({"error": "Payment not successful"}), 400    
+    return jsonify({"error": "Payment not successful"}), 400
+
+
+# ==================== INTASEND PAYMENT ====================
+
+def generate_ticket_number(order_id: str) -> str:
+    """Generate unique ticket number: CS-YYYYMMDD-XXXX"""
+    date_part = datetime.utcnow().strftime('%Y%m%d')
+    return f"CS-{date_part}-{order_id[-4:].upper()}"
+
+
+@marketplace_bp.route('/intasend/initialize', methods=['POST'])
+@jwt_required()
+def intasend_initialize_payment():
+    """
+    Initialize IntaSend payment (M-Pesa STK Push or Checkout)
+    
+    Body:
+        order_id: Order ID to pay for
+        payment_method: 'mpesa' or 'checkout' (default: mpesa)
+        redirect_url: Optional redirect URL after payment (for checkout)
+    """
+    try:
+        from intasend_service import get_intasend_service, IntaSendError
+        
+        data = request.get_json()
+        order_id = data.get('order_id')
+        payment_method = data.get('payment_method', 'mpesa')
+        redirect_url = data.get('redirect_url')
+        
+        order = Order.query.filter_by(id=order_id).first()
+        if not order:
+            return jsonify({"error": "Order not found"}), 404
+        
+        # Check for idempotency - don't reinitialize if already paid
+        if order.paid:
+            return jsonify({
+                "error": "Order already paid",
+                "order_id": order.id
+            }), 400
+        
+        # Generate ticket number if not exists
+        if not order.ticket_number:
+            order.ticket_number = generate_ticket_number(order.id)
+            db.session.commit()
+        
+        intasend = get_intasend_service()
+        
+        if payment_method == 'mpesa':
+            result = intasend.initiate_mpesa_payment(
+                phone_number=order.phone,
+                amount=order.total_price,
+                order_id=order.id,
+                narrative=f"Payment for Order {order.ticket_number}",
+                email=order.email,
+                name=f"{order.first_name} {order.last_name}"
+            )
+            
+            return jsonify({
+                "message": "M-Pesa STK Push initiated",
+                "invoice_id": result.get("invoice_id"),
+                "checkout_id": result.get("checkout_id"),
+                "order_id": order.id,
+                "ticket_number": order.ticket_number
+            }), 201
+            
+        else:  # checkout
+            result = intasend.initiate_checkout(
+                amount=order.total_price,
+                order_id=order.id,
+                email=order.email,
+                phone_number=order.phone,
+                first_name=order.first_name,
+                last_name=order.last_name,
+                redirect_url=redirect_url
+            )
+            
+            return jsonify({
+                "message": "Checkout session created",
+                "checkout_url": result.get("url"),
+                "checkout_id": result.get("checkout_id"),
+                "order_id": order.id,
+                "ticket_number": order.ticket_number
+            }), 201
+            
+    except IntaSendError as e:
+        return jsonify({"error": str(e), "details": e.response}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@marketplace_bp.route('/intasend/verify', methods=['POST'])
+@jwt_required()
+def intasend_verify_payment():
+    """
+    Verify IntaSend payment status
+    
+    Body:
+        order_id: Order ID to verify
+        invoice_id: IntaSend invoice ID (optional if we have payment_reference)
+    """
+    try:
+        from intasend_service import get_intasend_service, IntaSendError
+        
+        data = request.get_json()
+        order_id = data.get('order_id')
+        invoice_id = data.get('invoice_id')
+        
+        order = Order.query.filter_by(id=order_id).first()
+        if not order:
+            return jsonify({"error": "Order not found"}), 404
+        
+        # Use stored payment reference if no invoice_id provided
+        if not invoice_id and order.payment_reference:
+            invoice_id = order.payment_reference
+        
+        if not invoice_id:
+            return jsonify({"error": "Invoice ID required"}), 400
+        
+        intasend = get_intasend_service()
+        result = intasend.get_payment_status(invoice_id)
+        
+        state = result.get("state", "").upper()
+        
+        if state == "COMPLETE":
+            order.paid = True
+            order.payment_reference = invoice_id
+            order.status = 'confirmed'
+            db.session.commit()
+            
+            return jsonify({
+                "message": "Payment verified successfully",
+                "order_id": order.id,
+                "status": "paid",
+                "ticket_number": order.ticket_number
+            }), 200
+        
+        return jsonify({
+            "message": f"Payment status: {state}",
+            "order_id": order.id,
+            "status": state.lower(),
+            "invoice_id": invoice_id
+        }), 200
+        
+    except IntaSendError as e:
+        return jsonify({"error": str(e), "details": e.response}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@marketplace_bp.route('/intasend/webhook', methods=['POST'])
+def intasend_webhook():
+    """
+    Handle IntaSend webhook notifications
+    
+    Called by IntaSend when payment status changes
+    """
+    try:
+        from intasend_service import get_intasend_service
+        
+        # Get raw payload for signature verification
+        raw_payload = request.get_data(as_text=True)
+        signature = request.headers.get('X-IntaSend-Signature', '')
+        
+        intasend = get_intasend_service()
+        
+        # Verify webhook signature (skip in sandbox mode)
+        if not intasend.sandbox and signature:
+            if not intasend.verify_webhook_signature(raw_payload, signature):
+                return jsonify({"error": "Invalid signature"}), 401
+        
+        payload = request.get_json()
+        event_data = intasend.parse_webhook_payload(payload)
+        
+        order_id = event_data.get("api_ref")
+        state = event_data.get("state", "").upper()
+        invoice_id = event_data.get("invoice_id")
+        
+        if not order_id:
+            return jsonify({"error": "No order reference"}), 400
+        
+        order = Order.query.filter_by(id=order_id).first()
+        if not order:
+            return jsonify({"error": "Order not found"}), 404
+        
+        # Update order based on payment state
+        if state == "COMPLETE":
+            order.paid = True
+            order.payment_reference = invoice_id
+            order.status = 'confirmed'
+            
+            # Send confirmation email via Resend API
+            try:
+                from email_service import get_email_service
+                email_service = get_email_service()
+                if email_service.is_configured():
+                    email_service.send_order_confirmation(order)
+            except Exception as e:
+                print(f"Failed to send email: {e}")
+        elif state == "FAILED":
+            order.status = 'payment_failed'
+        
+        db.session.commit()
+        
+        return jsonify({"message": f"Webhook processed: {state}"}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # Route to get products created by the logged-in user
 @marketplace_bp.route('/my-products', methods=['GET'])
@@ -634,6 +1056,7 @@ def add_product():
     try:
         new_product = Products(
             title=title,
+            slug=Products.generate_slug(title),  # Generate SEO-friendly slug
             description=description,
             contact_info=contact_info,
             price=float(price) if price else None,  # Base price is optional if variations exist
@@ -732,6 +1155,7 @@ def create_product():
     # Create the new product
     new_product = Products(
         title=data.get('title'),
+        slug=Products.generate_slug(data.get('title')),  # Generate SEO-friendly slug
         description=data.get('description'),
         price=data.get('price'),
         image_url=r2_image_url,  # Use the R2 image URL
@@ -742,7 +1166,7 @@ def create_product():
     
     db.session.add(new_product)
     db.session.commit()
-    return jsonify({'message': 'Product created successfully'})
+    return jsonify({'message': 'Product created successfully', 'slug': new_product.slug})
 
 # Route to update a product
 @marketplace_bp.route('/update-product/<int:product_id>', methods=['PUT'])
@@ -1012,3 +1436,103 @@ def get_reviews(product_id):
     return jsonify({'reviews': reviews})
 
 
+# ==================== WISHLIST ENDPOINTS ====================
+
+@marketplace_bp.route('/wishlist/toggle', methods=['POST'])
+@jwt_required()
+def toggle_wishlist():
+    """Add or remove a product from user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        product_id = data.get('product_id')
+
+        if not product_id:
+            return jsonify({'error': 'Product ID is required'}), 400
+
+        # Check if product exists
+        product = Products.query.get(product_id)
+        if not product:
+            return jsonify({'error': 'Product not found'}), 404
+
+        # Check if already in wishlist
+        existing = Wishlists.query.filter_by(user_id=user_id, product_id=product_id).first()
+
+        if existing:
+            # Remove from wishlist
+            db.session.delete(existing)
+            db.session.commit()
+            return jsonify({
+                'message': 'Product removed from wishlist',
+                'in_wishlist': False,
+                'product_id': product_id
+            }), 200
+        else:
+            # Add to wishlist
+            wishlist_item = Wishlists(user_id=user_id, product_id=product_id)
+            db.session.add(wishlist_item)
+            db.session.commit()
+            return jsonify({
+                'message': 'Product added to wishlist',
+                'in_wishlist': True,
+                'product_id': product_id
+            }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/wishlist', methods=['GET'])
+@jwt_required()
+def get_wishlist():
+    """Get all products in user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        
+        wishlist_items = Wishlists.query.filter_by(user_id=user_id).all()
+        
+        product_ids = [item.product_id for item in wishlist_items]
+        
+        # Get full product details
+        products_data = []
+        for item in wishlist_items:
+            product = item.product
+            if product:
+                products_data.append({
+                    'id': product.id,
+                    'slug': product.slug,
+                    'title': product.title,
+                    'price': product.price,
+                    'images': [img.image_url for img in product.images],
+                    'brand': product.brand,
+                    'category': product.category,
+                    'added_at': item.created_at.isoformat()
+                })
+        
+        return jsonify({
+            'wishlist': products_data,
+            'product_ids': product_ids,
+            'count': len(product_ids)
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@marketplace_bp.route('/wishlist/check/<string:product_id>', methods=['GET'])
+@jwt_required()
+def check_wishlist(product_id):
+    """Check if a specific product is in user's wishlist"""
+    try:
+        user_id = get_jwt_identity()
+        
+        existing = Wishlists.query.filter_by(user_id=user_id, product_id=product_id).first()
+        
+        return jsonify({
+            'in_wishlist': existing is not None,
+            'product_id': product_id
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

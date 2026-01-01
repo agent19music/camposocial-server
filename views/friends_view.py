@@ -95,6 +95,7 @@ def get_friends():
             'first_name': friend.first_name,
             'last_name': friend.last_name,
             'avatar': friend.avatar,
+            'bio': friend.bio,
             'display_name': friend.display_name or f"{friend.first_name} {friend.last_name}",
             'is_online': is_online,
             'last_seen': last_seen,
@@ -136,6 +137,7 @@ def get_pending_friend_requests():
                     'first_name': requester.first_name,
                     'last_name': requester.last_name,
                     'avatar': requester.avatar,
+                    'bio': requester.bio,
                     'display_name': requester.display_name or f"{requester.first_name} {requester.last_name}"
                 },
                 'created_at': request.created_at.isoformat()
