@@ -60,9 +60,11 @@ def create_app():
         'http://localhost:8888',
         'http://127.0.0.1:8888',
         'https://camposocial.vercel.app',
-        'https://seller.camposocial.app',
+        'https://www.camposocial.vercel.app',
         'https://camposocial.app',
+        'https://www.camposocial.app',
         'https://seller.camposocial.app',
+        'https://www.seller.camposocial.app',
         'http://localhost:3001',
         'http://127.0.0.1:3001',
     }
