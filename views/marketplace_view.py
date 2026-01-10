@@ -936,7 +936,10 @@ def intasend_webhook():
     """
     Handle IntaSend webhook notifications
     
-    Called by IntaSend when payment status changes
+    Called by IntaSend when payment status changes.
+    Routes to appropriate handler based on api_ref prefix:
+    - BADGE_ -> Badge purchase
+    - Other -> Marketplace order
     """
     try:
         from intasend_service import get_intasend_service
@@ -955,40 +958,143 @@ def intasend_webhook():
         payload = request.get_json()
         event_data = intasend.parse_webhook_payload(payload)
         
-        order_id = event_data.get("api_ref")
+        api_ref = event_data.get("api_ref", "")
         state = event_data.get("state", "").upper()
         invoice_id = event_data.get("invoice_id")
         
-        if not order_id:
-            return jsonify({"error": "No order reference"}), 400
+        print(f"[Webhook] Received: api_ref={api_ref}, state={state}, invoice_id={invoice_id}")
         
-        order = Order.query.filter_by(id=order_id).first()
-        if not order:
-            return jsonify({"error": "Order not found"}), 404
-        
-        # Update order based on payment state
-        if state == "COMPLETE":
-            order.paid = True
-            order.payment_reference = invoice_id
-            order.status = 'confirmed'
-            
-            # Send confirmation email via Resend API
-            try:
-                from email_service import get_email_service
-                email_service = get_email_service()
-                if email_service.is_configured():
-                    email_service.send_order_confirmation(order)
-            except Exception as e:
-                print(f"Failed to send email: {e}")
-        elif state == "FAILED":
-            order.status = 'payment_failed'
-        
-        db.session.commit()
-        
-        return jsonify({"message": f"Webhook processed: {state}"}), 200
+        # Route based on api_ref prefix
+        if api_ref.startswith("BADGE_"):
+            return _handle_badge_webhook(event_data)
+        else:
+            return _handle_order_webhook(event_data)
         
     except Exception as e:
+        print(f"[Webhook] Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+def _handle_badge_webhook(event_data):
+    """Handle badge purchase webhook events"""
+    from models import BadgeTransaction, UserBadge, Badge
+    
+    api_ref = event_data.get("api_ref", "")
+    state = event_data.get("state", "").upper()
+    invoice_id = event_data.get("invoice_id")
+    
+    print(f"[Badge Webhook] Processing: api_ref={api_ref}, state={state}")
+    
+    # Find the transaction by invoice_id first
+    transaction = BadgeTransaction.query.filter_by(
+        checkout_request_id=invoice_id
+    ).first()
+    
+    if not transaction:
+        # Try to find by parsing api_ref
+        # Format: BADGE_{badge_id}_{user_id}_{timestamp} or BADGE_CARD_{badge_id}_{user_id}_{timestamp}
+        parts = api_ref.split('_')
+        if len(parts) >= 4:
+            try:
+                if parts[1] == 'CARD':
+                    badge_id = int(parts[2])
+                    user_id = int(parts[3])
+                else:
+                    badge_id = int(parts[1])
+                    user_id = int(parts[2])
+                
+                transaction = BadgeTransaction.query.filter_by(
+                    badge_id=badge_id,
+                    user_id=user_id,
+                    status='PENDING'
+                ).order_by(BadgeTransaction.created_at.desc()).first()
+            except (ValueError, IndexError):
+                pass
+    
+    if not transaction:
+        print(f"[Badge Webhook] Transaction not found for invoice_id={invoice_id}, api_ref={api_ref}")
+        return jsonify({"success": True, "message": "Transaction not found, ignoring"}), 200
+    
+    if state == "COMPLETE":
+        transaction.status = 'COMPLETED'
+        transaction.completed_at = datetime.utcnow()
+        transaction.mpesa_receipt_number = event_data.get('raw_response', {}).get('invoice', {}).get('mpesa_reference')
+        
+        # Grant badge to user
+        _grant_badge_for_webhook(transaction.user_id, transaction.badge_id)
+        print(f"[Badge Webhook] Badge granted to user {transaction.user_id}")
+        
+    elif state == "FAILED":
+        transaction.status = 'FAILED'
+        transaction.error_message = event_data.get('failed_reason', 'Payment failed')
+        print(f"[Badge Webhook] Payment failed for transaction {transaction.id}")
+    
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Badge webhook processed: {state}"}), 200
+
+
+def _grant_badge_for_webhook(user_id: int, badge_id: int):
+    """Helper to grant a badge to a user (for webhook handler)"""
+    from models import UserBadge
+    
+    # Check if user already has this badge
+    existing = UserBadge.query.filter_by(user_id=user_id, badge_id=badge_id).first()
+    if existing:
+        return
+    
+    # Grant badge to user
+    user_badge = UserBadge(
+        user_id=user_id,
+        badge_id=badge_id,
+        is_displayed=True,
+        display_order=0
+    )
+    
+    # Adjust display order of existing badges
+    existing_badges = UserBadge.query.filter_by(
+        user_id=user_id,
+        is_displayed=True
+    ).all()
+    
+    for i, existing_badge in enumerate(existing_badges):
+        existing_badge.display_order = i + 1
+    
+    db.session.add(user_badge)
+
+
+def _handle_order_webhook(event_data):
+    """Handle marketplace order webhook events"""
+    order_id = event_data.get("api_ref")
+    state = event_data.get("state", "").upper()
+    invoice_id = event_data.get("invoice_id")
+    
+    if not order_id:
+        return jsonify({"error": "No order reference"}), 400
+    
+    order = Order.query.filter_by(id=order_id).first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    
+    # Update order based on payment state
+    if state == "COMPLETE":
+        order.paid = True
+        order.payment_reference = invoice_id
+        order.status = 'confirmed'
+        
+        # Send confirmation email via Resend API
+        try:
+            from email_service import get_email_service
+            email_service = get_email_service()
+            if email_service.is_configured():
+                email_service.send_order_confirmation(order)
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+    elif state == "FAILED":
+        order.status = 'payment_failed'
+    
+    db.session.commit()
+    
+    return jsonify({"message": f"Order webhook processed: {state}"}), 200
 
 
 # Route to get products created by the logged-in user

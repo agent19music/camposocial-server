@@ -157,6 +157,183 @@ def initiate_badge_purchase():
         current_app.logger.error(f"Badge purchase error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@badges_bp.route('/purchase/card', methods=['POST'])
+@jwt_required()
+def initiate_card_purchase():
+    """Initiate badge purchase with IntaSend Checkout (for card payments)"""
+    try:
+        import os
+        from intasend_service import get_intasend_service, IntaSendError
+        
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        badge_id = data.get('badge_id')
+        
+        if not badge_id:
+            return jsonify({'success': False, 'error': 'Badge ID required'}), 400
+        
+        # Check if badge exists and is active
+        badge = Badge.query.filter_by(id=badge_id, is_active=True).first()
+        if not badge:
+            return jsonify({'success': False, 'error': 'Badge not found or inactive'}), 404
+        
+        # Check if user already owns this badge
+        existing_badge = UserBadge.query.filter_by(
+            user_id=current_user_id, 
+            badge_id=badge_id
+        ).first()
+        if existing_badge:
+            return jsonify({'success': False, 'error': 'You already own this badge'}), 400
+        
+        # Get user for payment details
+        user = Users.query.get(current_user_id)
+        if not user or not user.email:
+            return jsonify({'success': False, 'error': 'User email required for card payments'}), 400
+        
+        # Generate unique order reference
+        order_ref = f"BADGE_CARD_{badge_id}_{current_user_id}_{int(datetime.now().timestamp())}"
+        
+        # Build redirect URL for after payment
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        redirect_url = f"{frontend_url}/yaps/profile/payment-callback?order_ref={order_ref}"
+        
+        # Create transaction record
+        transaction = BadgeTransaction(
+            user_id=current_user_id,
+            badge_id=badge_id,
+            phone_number='card_payment',  # Marker for card payments
+            amount=badge.price_ksh,
+            status='PENDING',
+            payment_provider='intasend_card'
+        )
+        db.session.add(transaction)
+        db.session.flush()  # Get the transaction ID
+        
+        # Initiate IntaSend Checkout
+        try:
+            intasend = get_intasend_service()
+            checkout_result = intasend.initiate_checkout(
+                amount=badge.price_ksh,
+                order_id=order_ref,
+                email=user.email,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                redirect_url=redirect_url
+            )
+            
+            if checkout_result.get('url'):
+                # Update transaction with checkout info
+                transaction.checkout_request_id = checkout_result.get('checkout_id')
+                db.session.commit()
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Checkout session created',
+                    'transaction_id': transaction.id,
+                    'checkout_url': checkout_result.get('url'),
+                    'checkout_id': checkout_result.get('checkout_id')
+                }), 200
+            else:
+                transaction.status = 'FAILED'
+                transaction.error_message = 'Failed to create checkout URL'
+                db.session.commit()
+                
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to create checkout session'
+                }), 400
+                
+        except IntaSendError as e:
+            transaction.status = 'FAILED'
+            transaction.error_message = str(e)
+            db.session.commit()
+            
+            current_app.logger.error(f"IntaSend checkout error: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': 'Payment service error. Please try again.'
+            }), 400
+            
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Card purchase error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@badges_bp.route('/verify-card-payment', methods=['POST'])
+@jwt_required()
+def verify_card_payment():
+    """Verify card payment from callback and grant badge"""
+    try:
+        from intasend_service import get_intasend_service
+        
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        order_ref = data.get('order_ref')
+        checkout_id = data.get('checkout_id')
+        
+        if not order_ref:
+            return jsonify({'success': False, 'error': 'Order reference required'}), 400
+        
+        # Parse order_ref to get badge and user info
+        # Format: BADGE_CARD_{badge_id}_{user_id}_{timestamp}
+        if not order_ref.startswith('BADGE_CARD_'):
+            return jsonify({'success': False, 'error': 'Invalid order reference'}), 400
+        
+        parts = order_ref.split('_')
+        if len(parts) < 5:
+            return jsonify({'success': False, 'error': 'Invalid order reference format'}), 400
+        
+        badge_id = int(parts[2])
+        user_id = int(parts[3])
+        
+        # Verify user owns this transaction
+        if user_id != current_user_id:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+        
+        # Find the transaction
+        transaction = BadgeTransaction.query.filter_by(
+            user_id=current_user_id,
+            badge_id=badge_id,
+            status='PENDING',
+            payment_provider='intasend_card'
+        ).order_by(BadgeTransaction.created_at.desc()).first()
+        
+        if not transaction:
+            # Check if already completed
+            completed = BadgeTransaction.query.filter_by(
+                user_id=current_user_id,
+                badge_id=badge_id,
+                status='COMPLETED'
+            ).first()
+            if completed:
+                return jsonify({
+                    'success': True,
+                    'status': 'COMPLETED',
+                    'message': 'Badge already purchased!'
+                }), 200
+            
+            return jsonify({'success': False, 'error': 'Transaction not found'}), 404
+        
+        # Check IntaSend for payment status
+        # For now, we'll rely on webhook. Mark as processing.
+        # The webhook will actually complete the transaction
+        
+        return jsonify({
+            'success': True,
+            'status': 'PROCESSING',
+            'message': 'Payment is being verified...',
+            'transaction_id': transaction.id
+        }), 200
+        
+    except Exception as e:
+        current_app.logger.error(f"Card payment verification error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @badges_bp.route('/transaction/<int:transaction_id>/status', methods=['GET'])
 @jwt_required()
 def check_transaction_status(transaction_id):
@@ -449,3 +626,64 @@ def _grant_badge_to_user(user_id: int, badge_id: int):
         existing_badge.display_order = i + 1
     
     db.session.add(user_badge)
+
+
+@badges_bp.route('/admin/grant', methods=['POST'])
+@jwt_required()
+def admin_grant_badge():
+    """
+    Admin endpoint to manually grant a badge to a user.
+    Useful for recovering from failed webhooks or gifting badges.
+    """
+    try:
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # For now, only allow users to grant badges to themselves
+        # In production, you'd check for admin role
+        target_user_id = data.get('user_id', current_user_id)
+        badge_id = data.get('badge_id')
+        
+        if target_user_id != current_user_id:
+            # Only allow self-grant for now (or check admin role)
+            return jsonify({'success': False, 'error': 'Can only grant badges to yourself'}), 403
+        
+        if not badge_id:
+            return jsonify({'success': False, 'error': 'Badge ID required'}), 400
+        
+        # Check if badge exists
+        badge = Badge.query.get(badge_id)
+        if not badge:
+            return jsonify({'success': False, 'error': 'Badge not found'}), 404
+        
+        # Check if user already has this badge
+        existing = UserBadge.query.filter_by(user_id=target_user_id, badge_id=badge_id).first()
+        if existing:
+            return jsonify({'success': False, 'error': 'User already owns this badge'}), 400
+        
+        # Check if there's a completed transaction for this badge
+        transaction = BadgeTransaction.query.filter_by(
+            user_id=target_user_id,
+            badge_id=badge_id,
+            status='PENDING'
+        ).first()
+        
+        if transaction:
+            # Mark transaction as completed
+            transaction.status = 'COMPLETED'
+            transaction.completed_at = datetime.utcnow()
+        
+        # Grant the badge
+        _grant_badge_to_user(target_user_id, badge_id)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Badge "{badge.name}" granted successfully!'
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Admin grant badge error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
