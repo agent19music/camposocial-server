@@ -39,6 +39,7 @@ jmespath==1.0.1
 
 # Redis
 redis==5.0.1
+kombu>=5.3.0
 
 # Web Server
 gunicorn==21.2.0
