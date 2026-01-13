@@ -283,7 +283,7 @@ def get_badge_payment_service() -> BadgePaymentProvider:
     """
     global _badge_payment_service
     
-    provider_name = os.getenv('BADGE_PAYMENT_PROVIDER', 'intasend').lower()
+    provider_name = os.getenv('BADGE_PAYMENT_PROVIDER', 'intasend').lower().strip()
     
     # Check if we need to create a new instance (different provider or first call)
     if _badge_payment_service is None or _badge_payment_service.name != provider_name:
