@@ -943,26 +943,36 @@ def intasend_webhook():
     """
     try:
         from intasend_service import get_intasend_service
+        import json
         
-        # Get raw payload for signature verification
+        # Get raw payload for signature verification and debugging
         raw_payload = request.get_data(as_text=True)
         signature = request.headers.get('X-IntaSend-Signature', '')
+        
+        # CRITICAL DEBUG: Log raw payload to diagnose issues
+        print(f"[Webhook] === INCOMING WEBHOOK ===")
+        print(f"[Webhook] Raw payload: {raw_payload[:500]}...")  # First 500 chars
         
         intasend = get_intasend_service()
         
         # Verify webhook signature (skip in sandbox mode)
         if not intasend.sandbox and signature:
             if not intasend.verify_webhook_signature(raw_payload, signature):
+                print(f"[Webhook] Signature verification failed")
                 return jsonify({"error": "Invalid signature"}), 401
         
         payload = request.get_json()
+        if not payload:
+            print(f"[Webhook] Failed to parse JSON payload")
+            return jsonify({"error": "Invalid JSON"}), 400
+            
         event_data = intasend.parse_webhook_payload(payload)
         
-        api_ref = event_data.get("api_ref", "")
-        state = event_data.get("state", "").upper()
+        api_ref = event_data.get("api_ref") or ""
+        state = (event_data.get("state") or "").upper()
         invoice_id = event_data.get("invoice_id")
         
-        print(f"[Webhook] Received: api_ref={api_ref}, state={state}, invoice_id={invoice_id}")
+        print(f"[Webhook] Parsed: api_ref='{api_ref}', state='{state}', invoice_id='{invoice_id}'")
         
         # Route based on api_ref prefix
         if api_ref.startswith("BADGE_"):
@@ -971,7 +981,9 @@ def intasend_webhook():
             return _handle_order_webhook(event_data)
         
     except Exception as e:
-        print(f"[Webhook] Error: {str(e)}")
+        import traceback
+        print(f"[Webhook] ERROR: {str(e)}")
+        print(f"[Webhook] Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -979,21 +991,37 @@ def _handle_badge_webhook(event_data):
     """Handle badge purchase webhook events"""
     from models import BadgeTransaction, UserBadge, Badge
     
-    api_ref = event_data.get("api_ref", "")
-    state = event_data.get("state", "").upper()
+    api_ref = event_data.get("api_ref") or ""
+    state = (event_data.get("state") or "").upper()
     invoice_id = event_data.get("invoice_id")
+    raw_payload = event_data.get("raw_payload", {})
     
-    print(f"[Badge Webhook] Processing: api_ref={api_ref}, state={state}")
+    # Debug logging - critical for diagnosing issues
+    print(f"[Badge Webhook] Processing webhook:")
+    print(f"  - api_ref: {api_ref}")
+    print(f"  - state: {state}")
+    print(f"  - invoice_id: {invoice_id}")
+    print(f"  - raw_payload keys: {list(raw_payload.keys()) if raw_payload else 'None'}")
+    
+    if not api_ref.startswith("BADGE_"):
+        print(f"[Badge Webhook] api_ref doesn't start with BADGE_, got: '{api_ref}'")
+        return jsonify({"success": False, "error": "Invalid api_ref for badge"}), 400
     
     # Find the transaction by invoice_id first
-    transaction = BadgeTransaction.query.filter_by(
-        checkout_request_id=invoice_id
-    ).first()
+    transaction = None
+    if invoice_id:
+        transaction = BadgeTransaction.query.filter_by(
+            checkout_request_id=invoice_id
+        ).first()
+        if transaction:
+            print(f"[Badge Webhook] Found transaction by invoice_id: {transaction.id}")
     
     if not transaction:
         # Try to find by parsing api_ref
         # Format: BADGE_{badge_id}_{user_id}_{timestamp} or BADGE_CARD_{badge_id}_{user_id}_{timestamp}
         parts = api_ref.split('_')
+        print(f"[Badge Webhook] Parsing api_ref parts: {parts}")
+        
         if len(parts) >= 4:
             try:
                 if parts[1] == 'CARD':
@@ -1003,31 +1031,52 @@ def _handle_badge_webhook(event_data):
                     badge_id = int(parts[1])
                     user_id = int(parts[2])
                 
+                print(f"[Badge Webhook] Parsed badge_id={badge_id}, user_id={user_id}")
+                
                 transaction = BadgeTransaction.query.filter_by(
                     badge_id=badge_id,
                     user_id=user_id,
                     status='PENDING'
                 ).order_by(BadgeTransaction.created_at.desc()).first()
-            except (ValueError, IndexError):
-                pass
+                
+                if transaction:
+                    print(f"[Badge Webhook] Found transaction by api_ref: {transaction.id}")
+            except (ValueError, IndexError) as e:
+                print(f"[Badge Webhook] Failed to parse api_ref: {e}")
     
     if not transaction:
         print(f"[Badge Webhook] Transaction not found for invoice_id={invoice_id}, api_ref={api_ref}")
+        # Return 200 to acknowledge receipt - don't want IntaSend to keep retrying
         return jsonify({"success": True, "message": "Transaction not found, ignoring"}), 200
+    
+    # Check if already processed
+    if transaction.status == 'COMPLETED':
+        print(f"[Badge Webhook] Transaction {transaction.id} already completed, skipping")
+        return jsonify({"success": True, "message": "Already processed"}), 200
     
     if state == "COMPLETE":
         transaction.status = 'COMPLETED'
         transaction.completed_at = datetime.utcnow()
-        transaction.mpesa_receipt_number = event_data.get('raw_response', {}).get('invoice', {}).get('mpesa_reference')
+        # Try to get M-Pesa receipt from various payload locations
+        mpesa_ref = (
+            raw_payload.get('mpesa_reference') or
+            raw_payload.get('invoice', {}).get('mpesa_reference') or
+            event_data.get('raw_response', {}).get('invoice', {}).get('mpesa_reference')
+        )
+        transaction.mpesa_receipt_number = mpesa_ref
         
         # Grant badge to user
         _grant_badge_for_webhook(transaction.user_id, transaction.badge_id)
-        print(f"[Badge Webhook] Badge granted to user {transaction.user_id}")
+        print(f"[Badge Webhook] SUCCESS: Badge granted to user {transaction.user_id}, transaction {transaction.id}")
         
     elif state == "FAILED":
         transaction.status = 'FAILED'
-        transaction.error_message = event_data.get('failed_reason', 'Payment failed')
-        print(f"[Badge Webhook] Payment failed for transaction {transaction.id}")
+        transaction.error_message = event_data.get('failed_reason') or 'Payment failed'
+        print(f"[Badge Webhook] FAILED: Transaction {transaction.id} - {transaction.error_message}")
+    
+    else:
+        print(f"[Badge Webhook] Unknown state '{state}', not updating transaction")
+        return jsonify({"success": True, "message": f"Unknown state: {state}"}), 200
     
     db.session.commit()
     return jsonify({"success": True, "message": f"Badge webhook processed: {state}"}), 200

@@ -312,20 +312,28 @@ class IntaSendService:
         """
         Parse and normalize webhook payload
         
-        Returns standardized event data
+        IntaSend sends different formats - handle both nested and flat structures:
+        - Nested: {"invoice": {"invoice_id": "...", "api_ref": "..."}}
+        - Flat: {"invoice_id": "...", "api_ref": "..."}
         """
         invoice = payload.get("invoice", {})
         
+        # Extract from nested invoice OR root level (fallback)
+        invoice_id = payload.get("invoice_id") or invoice.get("invoice_id")
+        api_ref = payload.get("api_ref") or invoice.get("api_ref")
+        state = payload.get("state") or invoice.get("state")
+        
         return {
-            "event_type": payload.get("state"),  # COMPLETE, FAILED, etc.
-            "invoice_id": invoice.get("invoice_id"),
-            "api_ref": invoice.get("api_ref"),  # Our order_id
-            "amount": invoice.get("value"),
-            "phone": invoice.get("account"),
-            "state": invoice.get("state"),
-            "failed_reason": invoice.get("failed_reason"),
-            "created_at": invoice.get("created_at"),
-            "updated_at": invoice.get("updated_at"),
+            "event_type": state,
+            "invoice_id": invoice_id,
+            "api_ref": api_ref,
+            "amount": payload.get("value") or invoice.get("value"),
+            "phone": payload.get("account") or invoice.get("account"),
+            "state": state,
+            "failed_reason": payload.get("failed_reason") or invoice.get("failed_reason"),
+            "created_at": payload.get("created_at") or invoice.get("created_at"),
+            "updated_at": payload.get("updated_at") or invoice.get("updated_at"),
+            "raw_payload": payload  # Store original for debugging
         }
     
     # ==================== HELPERS ====================
