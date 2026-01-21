@@ -252,6 +252,8 @@ class Events(db.Model, SerializerMixin):
     date_of_event = db.Column(db.DateTime)
     entry_fee = db.Column(db.String)
     category = db.Column(db.String(50))
+    location = db.Column(db.String(255), nullable=True)  # Event venue/place
+    ticket_link = db.Column(db.String(512), nullable=True)  # External ticket purchase link
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -719,6 +721,9 @@ class Yap(db.Model):
     # Retweet reference
     original_yap_id = db.Column(db.String, db.ForeignKey('yaps.id'))
     retweets = db.relationship('Yap', backref=db.backref('original_yap', remote_side=[id]), lazy=True)
+    
+    # Poll reference (optional)
+    poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
     
     # Relationships
     replies = db.relationship('Reply', backref='yap', lazy=True, cascade="all, delete-orphan")

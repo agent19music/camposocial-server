@@ -76,6 +76,8 @@ def _serialize_event(event, current_user_id=None):
         'date_of_event': event.date_of_event.strftime('%Y-%m-%d') if event.date_of_event else None,
         'entry_fee': event.entry_fee,
         'category': event.category,
+        'location': event.location,  # Event venue/place
+        'ticket_link': event.ticket_link,  # External ticket link
         'user_id': event.user_id,
         'username': event.user.username if event.user else None,
         'userimage': event.user.avatar if event.user else None,
@@ -125,6 +127,8 @@ def add_event():
         end_time_str = data.get('end_time')
         entry_fee = data.get('entry_fee')
         category = data.get('category')
+        location = data.get('location')  # Event venue
+        ticket_link = data.get('ticket_link')  # External ticket URL
 
         ticket_groups_raw = data.get('ticket_groups')
 
@@ -168,6 +172,8 @@ def add_event():
             date_of_event=date_of_event,
             entry_fee=entry_fee,
             category=category,
+            location=location,
+            ticket_link=ticket_link,
             image_url=r2_image_url,  # Store R2 URL here
             user_id=current_user
         )
