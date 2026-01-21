@@ -69,6 +69,7 @@ def add_yap():
         content = data.get('content')
         location = data.get('location', None)
         original_yap_id = data.get('original_yap_id', None)
+        poll_id = data.get('poll_id', None)  # Optional poll reference
 
         if not content:
             return jsonify({"error": "Content is required"}), 400
@@ -119,6 +120,7 @@ def add_yap():
             user_id=user_id,
             location=location,
             original_yap_id=original_yap_id,
+            poll_id=poll_id,  # Link to poll if provided
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
