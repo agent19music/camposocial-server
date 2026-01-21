@@ -11,9 +11,24 @@ def get_redis_client():
     """
     Creates and returns a Redis client instance with connection pooling.
     
+    Prioritizes REDIS_URL if set (for external Redis like Upstash),
+    otherwise falls back to individual host/port/password settings.
+    
     Returns:
         redis.Redis: A Redis client instance
     """
+    redis_url = os.getenv('REDIS_URL')
+    
+    if redis_url:
+        # Use REDIS_URL directly (supports Upstash, managed Redis, etc.)
+        return redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5
+        )
+    
+    # Fallback to individual settings
     redis_host = os.getenv('REDIS_HOST', 'localhost')
     redis_port = int(os.getenv('REDIS_PORT', 6379))
     redis_db = int(os.getenv('REDIS_DB', 0))
@@ -24,7 +39,7 @@ def get_redis_client():
         port=redis_port,
         db=redis_db,
         password=os.getenv('REDIS_PASSWORD'),
-        decode_responses=True,  # Automatically decode responses to strings
+        decode_responses=True,
         max_connections=50,
         socket_connect_timeout=5,
         socket_timeout=5
