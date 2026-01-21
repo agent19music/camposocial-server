@@ -1,20 +1,40 @@
 # ============================================================================
 # Docker Compose - Production Configuration
 # ============================================================================
-# This file is for PRODUCTION deployment.
-# For local development, use docker-compose.yml
+# This file is for PRODUCTION deployment with automatic migration handling.
 #
-# Prerequisites:
-#   1. Build and tag your image: docker build -t camposocial-server:latest .
-#   2. Run migrations FIRST: 
-#      docker run --rm --env-file .env.prod -e MIGRATE_ONLY=true camposocial-server:latest
-#   3. Then deploy: docker compose -f docker-compose.prod.yml up -d
+# The 'migrate' service runs first and must succeed before 'app' starts.
+# This ensures database schema is always up-to-date before the app runs.
 #
-# Environment variables should be set in .env.prod file (not committed to git)
+# Usage:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Code-only deployment (skip migrations):
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --no-deps app
 # ============================================================================
 
 services:
-  # Flask application service
+  # ============================================================================
+  # Migration Service - Runs FIRST, exits after completion
+  # ============================================================================
+  migrate:
+    image: camposocial-server:${IMAGE_TAG:-latest}
+    container_name: camposocial-migrate
+    environment:
+      - MIGRATE_ONLY=true
+      - DATABASE_URL=${DATABASE_URL}
+      - FLASK_APP=app.py
+    networks:
+      - camposocial-network
+    # Exit after running - don't restart
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: none
+
+  # ============================================================================
+  # Flask Application Service
+  # ============================================================================
   app:
     image: camposocial-server:${IMAGE_TAG:-latest}
     container_name: camposocial-server
@@ -30,6 +50,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - USE_REDIS_QUEUE=true
       - SOCKETIO_ASYNC_MODE=eventlet
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
@@ -47,8 +68,9 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - SELLER_DASHBOARD_URL=${SELLER_DASHBOARD_URL}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
-    # No volume mounts in production - use the built image
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
@@ -60,7 +82,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    # Production resource limits
     deploy:
       resources:
         limits:
@@ -80,13 +101,12 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Redis service for WebSocket message queue and caching
+  # ============================================================================
+  # Redis Service
+  # ============================================================================
   redis:
     image: redis:7-alpine
     container_name: camposocial-redis
-    # Don't expose Redis port in production (only internal network access)
-    # ports:
-    #   - "6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes --appendfsync everysec --maxmemory 100mb --maxmemory-policy allkeys-lru
@@ -119,4 +139,3 @@ networks:
 volumes:
   redis-data:
     driver: local
-
