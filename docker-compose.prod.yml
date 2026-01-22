@@ -39,7 +39,7 @@ services:
     image: camposocial-server:${IMAGE_TAG:-latest}
     container_name: camposocial-server
     ports:
-      - "5000:5000"
+      - "80:5000"
     environment:
       - FLASK_ENV=production
       - FLASK_DEBUG=false
