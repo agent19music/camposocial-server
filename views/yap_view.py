@@ -18,8 +18,8 @@ load_dotenv()
 yap_bp = Blueprint('yap', __name__)
 
 
-R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
-R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
+R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID') or os.getenv('AWS_ACCESS_KEY_ID')
+R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY') or os.getenv('AWS_SECRET_ACCESS_KEY')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 IMAGE_PREFIX = os.getenv('IMAGE_PREFIX')
