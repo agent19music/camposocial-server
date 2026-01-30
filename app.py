@@ -198,6 +198,10 @@ def create_app():
     from views.media_view import media_bp
     app.register_blueprint(media_bp, url_prefix='/camposocial/api')
     
+    # Register E2EE device management blueprint
+    from views.device_view import device_bp
+    app.register_blueprint(device_bp, url_prefix='/camposocial/api')
+    
     # Advanced messaging functionality is now merged into message_bp
     
     # ========== PHASE 8 BLUEPRINTS ==========
