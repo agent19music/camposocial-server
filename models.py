@@ -1505,6 +1505,101 @@ class BadgeTransaction(db.Model):
 
 
 # ============================================================================
+# E2EE Multi-Device Support Models
+# ============================================================================
+
+class UserDevice(db.Model):
+    """Tracks each device a user has registered for E2EE messaging.
+    
+    Each device has its own keypair. Messages are encrypted separately
+    for each device to enable multi-device E2EE support.
+    """
+    __tablename__ = 'user_devices'
+    
+    id = db.Column(db.String(36), primary_key=True)  # UUID generated client-side
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    device_name = db.Column(db.String(100))  # e.g., "Chrome on MacBook"
+    device_type = db.Column(db.String(20))   # 'web', 'ios', 'android', 'desktop'
+    public_key = db.Column(db.Text, nullable=False)  # Device-specific NaCl public key
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_active = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # User agent info for device identification
+    user_agent = db.Column(db.String(512), nullable=True)
+    
+    user = db.relationship('Users', backref=db.backref('devices', lazy='dynamic'))
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'device_name': self.device_name,
+            'device_type': self.device_type,
+            'public_key': self.public_key,
+            'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
+            'last_active': self.last_active.isoformat() + 'Z' if self.last_active else None,
+            'is_active': self.is_active
+        }
+
+
+class EncryptedKeyBackup(db.Model):
+    """Stores encrypted private key backup for key recovery on new devices.
+    
+    The private key is encrypted client-side with a user-chosen recovery
+    passphrase using AES-256-GCM. The server never sees the plaintext key.
+    """
+    __tablename__ = 'encrypted_key_backups'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
+    encrypted_private_key = db.Column(db.Text, nullable=False)  # AES-GCM encrypted, base64 encoded
+    key_salt = db.Column(db.String(64), nullable=False)  # Salt for PBKDF2 key derivation
+    key_iv = db.Column(db.String(32), nullable=False)    # IV for AES-GCM
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = db.relationship('Users', backref=db.backref('key_backup', uselist=False))
+    
+    def to_dict(self):
+        return {
+            'encrypted_private_key': self.encrypted_private_key,
+            'key_salt': self.key_salt,
+            'key_iv': self.key_iv,
+            'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() + 'Z' if self.updated_at else None
+        }
+
+
+class MessageRecipientKey(db.Model):
+    """Stores per-device encrypted content for each message.
+    
+    When a message is sent, it's encrypted separately for each recipient
+    device AND each sender device (so sender can read their own messages).
+    This enables true multi-device E2EE where each device can decrypt
+    messages independently.
+    """
+    __tablename__ = 'message_recipient_keys'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=False)
+    device_id = db.Column(db.String(36), db.ForeignKey('user_devices.id'), nullable=False)
+    encrypted_content = db.Column(db.Text, nullable=False)  # Ciphertext for this specific device
+    nonce = db.Column(db.String(64), nullable=False)  # Nonce for NaCl box decryption
+    
+    message = db.relationship('Message', backref=db.backref('recipient_keys', lazy='dynamic'))
+    device = db.relationship('UserDevice', backref=db.backref('message_keys', lazy='dynamic'))
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'message_id': self.message_id,
+            'device_id': self.device_id,
+            'encrypted_content': self.encrypted_content,
+            'nonce': self.nonce
+        }
+
+
+# ============================================================================
 # Database Indexes for Performance Optimization
 # ============================================================================
 
@@ -1520,3 +1615,8 @@ db.Index('idx_conversation_users', Conversation.user1_id, Conversation.user2_id)
 # Index for user activity queries (checking online status)
 # Note: UserActivity is in models_blocking.py but we reference it here for completeness
 # This index should be added to models_blocking.py if needed
+
+# E2EE Multi-Device Indexes
+db.Index('idx_user_devices_user', UserDevice.user_id, UserDevice.is_active)
+db.Index('idx_message_recipient_keys_message', MessageRecipientKey.message_id)
+db.Index('idx_message_recipient_keys_device', MessageRecipientKey.device_id)

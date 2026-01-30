@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Message, Conversation, Users, Reaction, MessageMedia, Friendship
+from models import db, Message, Conversation, Users, Reaction, MessageMedia, Friendship, UserDevice, MessageRecipientKey
 from models_blocking import UserActivity
 from sqlalchemy import or_, and_, desc, func
 from datetime import datetime
@@ -47,7 +47,15 @@ def _ensure_conversation(current_user_id: int, other_user_id: int) -> Conversati
 
     return conversation
 
-def _serialize_message(message: Message, current_user_id: int) -> dict:
+def _serialize_message(message: Message, current_user_id: int, device_id: str = None) -> dict:
+    """Serialize a message for API response.
+    
+    Args:
+        message: The Message model instance
+        current_user_id: Current authenticated user's ID
+        device_id: Optional device ID to include device-specific ciphertext
+                   for multi-device E2EE decryption
+    """
     # Use the existing 'author' relationship from Users model
     sender = message.author if hasattr(message, 'author') else Users.query.get(message.user_id)
     media_payload = [
@@ -70,7 +78,26 @@ def _serialize_message(message: Message, current_user_id: int) -> dict:
         for reaction in message.reactions
     ]
 
-    return {
+    # Check if message has been edited
+    is_edited = MessageHistory.query.filter_by(message_id=message.id).first() is not None
+    
+    # Fetch reply details if this message is a reply
+    reply_details = None
+    if message.reply_to_id:
+        replied_msg = Message.query.get(message.reply_to_id)
+        if replied_msg:
+            replied_sender = Users.query.get(replied_msg.user_id)
+            reply_details = {
+                'id': replied_msg.id,
+                'content': replied_msg.encrypted_content,  # Client will decrypt if needed
+                'sender_name': (replied_sender.display_name or f"{replied_sender.first_name} {replied_sender.last_name}") if replied_sender else 'Unknown',
+                'sender_id': replied_msg.user_id,
+                'is_encrypted': replied_msg.is_encrypted,
+                'nonce': getattr(replied_msg, 'nonce', None),
+                'sender_public_key': replied_sender.public_key if replied_sender else None
+            }
+    
+    result = {
         'id': message.id,
         'conversation_id': message.conversation_id,
         'sender_id': message.user_id,
@@ -79,16 +106,34 @@ def _serialize_message(message: Message, current_user_id: int) -> dict:
         'sender_public_key': sender.public_key if sender else None,  # For E2EE decryption
         'content': None if message.is_encrypted else message.encrypted_content,
         'ciphertext': message.encrypted_content,
-        'nonce': getattr(message, 'nonce', None),  # For E2EE decryption
+        'nonce': getattr(message, 'nonce', None),  # For E2EE decryption (legacy)
         'media': media_payload,
         'reply_to': message.reply_to_id,
+        'reply_details': reply_details,  # NEW: Full reply message details for UI
         'encrypted': message.is_encrypted,
         'timestamp': message.timestamp.isoformat() + 'Z',  # UTC marker for proper JS Date parsing
         'is_read': bool(getattr(message, 'read_at', None)),
         'is_own': message.user_id == current_user_id,
         'reactions': reaction_payload,
-        'is_deleted': message.is_deleted
+        'is_deleted': message.is_deleted,
+        'is_edited': is_edited
     }
+    
+    # Include device-specific ciphertext for multi-device E2EE
+    if device_id and message.is_encrypted:
+        device_key = MessageRecipientKey.query.filter_by(
+            message_id=message.id,
+            device_id=device_id
+        ).first()
+        
+        if device_key:
+            result['device_ciphertext'] = device_key.encrypted_content
+            result['device_nonce'] = device_key.nonce
+            result['has_device_key'] = True
+        else:
+            result['has_device_key'] = False
+    
+    return result
 
 def _invalidate_conversation_cache(user_id):
     """Invalidate conversation list cache for a user"""
@@ -101,18 +146,45 @@ def _invalidate_conversation_cache(user_id):
 @message_bp.route('/messages', methods=['POST'])
 @jwt_required()
 def send_message():
-    """Send a message with real-time delivery"""
+    """Send a message with real-time delivery.
+    
+    Supports both legacy single-key encryption and new multi-device encryption.
+    
+    Legacy format (backward compatible):
+    {
+        "content": "ciphertext",
+        "nonce": "base64-nonce",
+        "encrypted": true,
+        ...
+    }
+    
+    Multi-device format:
+    {
+        "content": "ciphertext",  // Fallback for old clients
+        "nonce": "base64-nonce",  // Fallback nonce
+        "encrypted": true,
+        "encrypted_payloads": {
+            "device-uuid-1": {"ciphertext": "...", "nonce": "..."},
+            "device-uuid-2": {"ciphertext": "...", "nonce": "..."},
+            ...
+        },
+        ...
+    }
+    """
     try:
         current_user_id = get_jwt_identity()
         payload = request.get_json() or {}
 
         recipient_id = payload.get('recipient_id')
         raw_content = payload.get('content')
-        nonce = payload.get('nonce')  # E2EE nonce for decryption
+        nonce = payload.get('nonce')  # E2EE nonce for decryption (legacy)
         encrypted_flag = bool(payload.get('encrypted', False))
         provided_conversation_id = payload.get('conversation_id')
         reply_to = payload.get('reply_to')
         media_payload = payload.get('media', [])
+        
+        # Multi-device E2EE: per-device encrypted payloads
+        encrypted_payloads = payload.get('encrypted_payloads', {})
 
         if not recipient_id:
             return jsonify({'error': 'recipient_id is required'}), 400
@@ -145,7 +217,7 @@ def send_message():
 
         message = Message(
             encrypted_content=raw_content,
-            nonce=nonce,  # Store E2EE nonce
+            nonce=nonce,  # Store E2EE nonce (legacy fallback)
             user_id=current_user_id,
             conversation_id=conversation.id,
             reply_to_id=reply_to,
@@ -154,6 +226,33 @@ def send_message():
 
         db.session.add(message)
         db.session.flush()
+
+        # Store per-device encrypted payloads for multi-device E2EE
+        if encrypted_payloads and isinstance(encrypted_payloads, dict):
+            for device_id, device_payload in encrypted_payloads.items():
+                if not isinstance(device_payload, dict):
+                    continue
+                    
+                device_ciphertext = device_payload.get('ciphertext')
+                device_nonce = device_payload.get('nonce')
+                
+                if not device_ciphertext or not device_nonce:
+                    continue
+                
+                # Verify the device exists and is active
+                device = UserDevice.query.filter_by(
+                    id=device_id,
+                    is_active=True
+                ).first()
+                
+                if device:
+                    recipient_key = MessageRecipientKey(
+                        message_id=message.id,
+                        device_id=device_id,
+                        encrypted_content=device_ciphertext,
+                        nonce=device_nonce
+                    )
+                    db.session.add(recipient_key)
 
         attachments = []
         for media_item in media_payload:
@@ -180,6 +279,9 @@ def send_message():
         db.session.commit()
 
         serialized = _serialize_message(message, current_user_id)
+        
+        # Add multi-device flag to serialized response
+        serialized['has_device_keys'] = bool(encrypted_payloads)
 
         preview = '[Encrypted message]' if encrypted_flag else raw_content[:100] + '...' if len(raw_content) > 100 else raw_content
         conversation.last_message_preview = preview
@@ -214,7 +316,13 @@ def send_message():
 @message_bp.route('/conversations/<conversation_id>/messages', methods=['GET'])
 @jwt_required()
 def get_messages(conversation_id):
-    """Get messages for a conversation"""
+    """Get messages for a conversation.
+    
+    Query params:
+        - limit: Max number of messages to return (default 50)
+        - before: Get messages before this message ID (for pagination)
+        - device_id: Device ID to include device-specific ciphertexts for multi-device E2EE
+    """
     try:
         current_user_id = get_jwt_identity()
         
@@ -225,6 +333,7 @@ def get_messages(conversation_id):
         
         limit = request.args.get('limit', 50, type=int)
         before_id = request.args.get('before', type=int)
+        device_id = request.args.get('device_id', type=str)  # For multi-device E2EE
 
         query = Message.query.filter_by(conversation_id=conversation.id).order_by(desc(Message.timestamp))
 
@@ -235,7 +344,7 @@ def get_messages(conversation_id):
 
         messages = query.limit(limit).all()
 
-        serialized = [_serialize_message(message, current_user_id) for message in messages]
+        serialized = [_serialize_message(message, current_user_id, device_id) for message in messages]
 
         return jsonify({
             'messages': serialized,
