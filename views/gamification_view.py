@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import (db, Users, UserPoints, Achievement, UserAchievement, 
                    PointTransaction, Yap, Like, Reply, Events, Products, 
-                   Reviews, GroupMember, EnhancedNotification)
+                   Reviews, CommunityMember, EnhancedNotification)
 from datetime import datetime, timedelta, date
 from sqlalchemy import func, and_, or_, desc
 import json
@@ -166,7 +166,7 @@ def check_achievement_criteria(user_id, achievement, criteria):
     
     elif achievement.category == 'community':
         if 'min_groups_joined' in criteria:
-            group_count = GroupMember.query.filter_by(
+            group_count = CommunityMember.query.filter_by(
                 user_id=user_id,
                 is_active=True
             ).count()

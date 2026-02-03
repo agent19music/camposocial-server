@@ -62,6 +62,19 @@ def register():
         # Validate email
         if not email or '@' not in email:
             return jsonify({"error": "Valid email is required"}), 400
+            
+        # Enforce school email policy
+        allowed_domains = ['.edu', '.ac.ke', '.ac.uk', '.edu.ng', '.ac.za']
+        is_school_email = any(email.endswith(domain) for domain in allowed_domains)
+        
+        # Also allow specific local university domains if not covered by extensions
+        whitelist = ['strathmore.edu', 'uonbi.ac.ke', 'usiu.ac.ke', 'ku.ac.ke', 'jkuat.ac.ke', 'daystar.ac.ke', 'moringaschool.com', 'student.moringaschool.com']
+        if not is_school_email and email.split('@')[1] in whitelist:
+            is_school_email = True
+            
+        if not is_school_email:
+             return jsonify({"error": "Please use a valid university/school email address"}), 400
+
         
         # Validate password (at least 8 chars with mix)
         if len(password) < 8:
@@ -312,7 +325,9 @@ def authenticated_user():
             'phone_no': user.phone_no,
             'first_name': user.first_name,
             'last_name': user.last_name,
-            'course': user.category,
+            'university': user.university,
+            'faculty': user.faculty,
+            'course': user.course,
             'joined': user.created_at,
             'display_name': user.display_name,
             'is_seller': Seller.query.filter_by(user_id=user.id).first() is not None
@@ -749,6 +764,22 @@ def handle_oauth_callback(provider, token=None, mode='signup'):
         
         if not email:
             return jsonify({"error": f"Email not provided by {provider}"}), 400
+
+        # Enforce school email policy for new signups
+        if mode == 'signup':
+            allowed_domains = ['.edu', '.ac.ke', '.ac.uk', '.edu.ng', '.ac.za']
+            is_school_email = any(email.endswith(domain) for domain in allowed_domains)
+            
+            whitelist = ['strathmore.edu', 'uonbi.ac.ke', 'usiu.ac.ke', 'ku.ac.ke', 'jkuat.ac.ke', 'daystar.ac.ke', 'moringaschool.com', 'student.moringaschool.com']
+            if not is_school_email and email.split('@')[1] in whitelist:
+                is_school_email = True
+                
+            if not is_school_email:
+                # Check if user already exists (maybe they signed up before policy change)
+                existing_check = Users.query.filter_by(email=email).first()
+                if not existing_check:
+                    return jsonify({"error": "Please use a valid university/school email address"}), 400
+
         
         # Check if user exists by OAuth ID first, then by email
         existing_user = Users.query.filter_by(oauth_provider=provider, oauth_id=oauth_id).first()
@@ -865,12 +896,24 @@ def complete_profile():
     if 'bio' in data:
         user.bio = data['bio']
     
+    # University and faculty fields - IMPORTANT for profile completion
+    if 'university' in data and data['university']:
+        user.university = data['university']
+    if 'faculty' in data and data['faculty']:
+        user.faculty = data['faculty']
+    if 'course' in data:
+        user.course = data['course']
+    
     # Mark profile as completed
     user.profile_completed = True
     
     db.session.commit()
     
-    return jsonify({"message": "Profile completed successfully"}), 200
+    return jsonify({
+        "message": "Profile completed successfully",
+        "username": user.username,
+        "display_name": user.display_name
+    }), 200
 
 
 # ============ Cross-App Auth Endpoints ============

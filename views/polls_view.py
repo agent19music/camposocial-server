@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Poll, PollOption, PollVote, Users, Group, GroupMember, EnhancedNotification
+from models import db, Poll, PollOption, PollVote, Users, Community, CommunityMember, EnhancedNotification
 from datetime import datetime, timedelta
 from sqlalchemy import and_, or_, func
 from cuid import cuid
@@ -10,7 +10,7 @@ polls_bp = Blueprint('polls', __name__)
 # ============= Helper Functions =============
 def can_create_poll_in_group(group_id, user_id):
     """Check if user can create polls in a group"""
-    member = GroupMember.query.filter_by(
+    member = CommunityMember.query.filter_by(
         group_id=group_id,
         user_id=user_id,
         is_active=True
@@ -26,8 +26,8 @@ def can_view_poll(poll, user_id):
     if not poll.group_id:
         return True
     
-    # Group polls - check membership
-    group = Group.query.get(poll.group_id)
+    # Community polls - check membership
+    group = Community.query.get(poll.group_id)
     if not group or not group.is_active:
         return False
     
@@ -36,7 +36,7 @@ def can_view_poll(poll, user_id):
         return True
     
     # Private/secret group polls - check membership
-    member = GroupMember.query.filter_by(
+    member = CommunityMember.query.filter_by(
         group_id=poll.group_id,
         user_id=user_id,
         is_active=True
@@ -132,9 +132,9 @@ def create_poll():
         
         # Send notifications if it's a group poll
         if group_id:
-            group = Group.query.get(group_id)
+            group = Community.query.get(group_id)
             # Notify group members
-            members = GroupMember.query.filter_by(
+            members = CommunityMember.query.filter_by(
                 group_id=group_id,
                 is_active=True
             ).all()
@@ -187,7 +187,7 @@ def get_polls():
         active_only = request.args.get('active_only', 'true').lower() == 'true'
         
         # Get user's groups for filtering
-        user_groups = GroupMember.query.filter_by(
+        user_groups = CommunityMember.query.filter_by(
             user_id=user_id,
             is_active=True
         ).all()
@@ -239,7 +239,7 @@ def get_polls():
             # Get group info if applicable
             group = None
             if poll.group_id:
-                group = Group.query.get(poll.group_id)
+                group = Community.query.get(poll.group_id)
             
             polls.append({
                 'id': poll.id,
@@ -306,7 +306,7 @@ def get_poll_details(poll_id):
         # Get group info if applicable
         group = None
         if poll.group_id:
-            group = Group.query.get(poll.group_id)
+            group = Community.query.get(poll.group_id)
         
         # Format options
         options_data = []
@@ -539,7 +539,7 @@ def delete_poll(poll_id):
         is_group_admin = False
         
         if poll.group_id:
-            member = GroupMember.query.filter_by(
+            member = CommunityMember.query.filter_by(
                 group_id=poll.group_id,
                 user_id=user_id,
                 is_active=True
@@ -570,7 +570,7 @@ def get_trending_polls():
         user_id = get_jwt_identity()
         
         # Get user's groups
-        user_groups = GroupMember.query.filter_by(
+        user_groups = CommunityMember.query.filter_by(
             user_id=user_id,
             is_active=True
         ).all()
@@ -657,7 +657,7 @@ def get_user_polls():
             # Get group info if applicable
             group = None
             if poll.group_id:
-                group = Group.query.get(poll.group_id)
+                group = Community.query.get(poll.group_id)
             
             polls.append({
                 'id': poll.id,

@@ -41,6 +41,12 @@ class Users(db.Model, SerializerMixin):
     is_oauth_user = db.Column(db.Boolean, default=False)      # Flag for OAuth users
     profile_completed = db.Column(db.Boolean, default=False)  # Track profile completion
     
+    # Uniwell/Campus specific fields
+    university = db.Column(db.String(255), nullable=True)     # University name
+    faculty = db.Column(db.String(255), nullable=True)        # Faculty/Department
+    course = db.Column(db.String(255), nullable=True)         # Specific course (optional)
+
+    
     # Email verification fields (for manual signup)
     email_verified = db.Column(db.Boolean, default=False)     # True if email is verified
     verification_code = db.Column(db.String(6), nullable=True)  # 6-digit OTP
@@ -352,6 +358,10 @@ class Products(db.Model, SerializerMixin):
             'updated_at': self.updated_at.isoformat(),  # Format datetime
             'seller_id': self.seller_id
         }
+
+    # Relationship to user/university for filtering (optional, but good for future)
+    # university_restriction = db.Column(db.String(255), nullable=True) 
+
 
 class ProductImages(db.Model):
     __tablename__ = 'product_images'
@@ -715,6 +725,10 @@ class Yap(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     location = db.Column(db.String, nullable=True)
     
+    # Soft delete fields
+    is_deleted = db.Column(db.Boolean, default=False, index=True)
+    deleted_at = db.Column(db.DateTime, nullable=True)
+    
     # Foreign key to user
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
@@ -725,14 +739,35 @@ class Yap(db.Model):
     # Poll reference (optional)
     poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
     
+    # Community reference (for community posts)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True, index=True)
+    
     # Relationships
     replies = db.relationship('Reply', backref='yap', lazy=True, cascade="all, delete-orphan")
     likes = db.relationship('Like', backref='yap', lazy=True, cascade="all, delete-orphan")
     hashtags = db.relationship('YapHashtag', backref='yap', lazy=True)
     media = db.relationship('YapMedia', backref='yap', lazy=True)  # Relationship to multiple media files
+    community = db.relationship('Community', backref='direct_yaps', foreign_keys=[community_id])
 
     def __repr__(self):
         return f"<Yap {self.id} by {self.user.username}>"
+    
+    def soft_delete(self):
+        """Mark the yap as deleted without removing from database"""
+        self.is_deleted = True
+        self.deleted_at = datetime.utcnow()
+    
+    @staticmethod
+    def cleanup_deleted_yaps(days=30):
+        """Permanently delete yaps that were soft-deleted more than 'days' ago"""
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        deleted_count = Yap.query.filter(
+            Yap.is_deleted == True,
+            Yap.deleted_at < cutoff
+        ).delete()
+        db.session.commit()
+        return deleted_count
 
 
 # Reply model with self-referential relationship for threaded replies
@@ -941,6 +976,32 @@ class Notification(db.Model):
     def __repr__(self):
         return f"<Notification to {self.recipient.username} - {self.type}>"  
 
+
+# Muted User model - for hiding yaps from specific users
+class MutedUser(db.Model):
+    __tablename__ = 'muted_users'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    muter_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # User who mutes
+    muted_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # User being muted
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationships
+    muter = db.relationship('Users', foreign_keys=[muter_id], backref='muted_by_me')
+    muted = db.relationship('Users', foreign_keys=[muted_id], backref='muted_by_others')
+    
+    __table_args__ = (
+        db.UniqueConstraint('muter_id', 'muted_id', name='unique_mute'),
+        db.CheckConstraint('muter_id != muted_id', name='no_self_mute'),
+    )
+    
+    def __repr__(self):
+        return f"<MutedUser {self.muter_id} muted {self.muted_id}>"
+
+
+# BlockedUser model is defined in models_blocking.py to avoid circular imports
+
+
 # Media model (multiple images and videos per Yap)
 class YapMedia(db.Model):
     __tablename__ = 'yapmedia'
@@ -1100,16 +1161,21 @@ class TokenBlocklist(db.Model):
 # ==================== PHASE 8 MODELS ====================
 
 # Groups/Communities
-class Group(db.Model, SerializerMixin):
-    __tablename__ = 'groups'
+class Community(db.Model, SerializerMixin):
+    __tablename__ = 'communities'
+    
+    # Default images
+    DEFAULT_COVER_IMAGE = 'https://pub-0a313ba028f9423cba4b9803d081b5db.r2.dev/app%20ui/camposocial-community-deafult-cover-image-2.png'
+    DEFAULT_ICON_IMAGE = 'https://pub-0a313ba028f9423cba4b9803d081b5db.r2.dev/app%20ui/camposocial-community-default-icon-image.png'
     
     id = db.Column(db.String, primary_key=True, default=cuid)
+    slug = db.Column(db.String(300), unique=True, nullable=False, index=True)  # SEO-friendly URL slug
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     category = db.Column(db.String(100))  # 'study', 'hobby', 'professional', 'event_planning', 'other'
     privacy_type = db.Column(db.String(20), default='public')  # 'public', 'private', 'secret'
-    cover_image = db.Column(db.String(255))
-    icon_image = db.Column(db.String(255))
+    cover_image = db.Column(db.String(255), default=DEFAULT_COVER_IMAGE)
+    icon_image = db.Column(db.String(255), default=DEFAULT_ICON_IMAGE)
     rules = db.Column(db.Text)
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1118,49 +1184,122 @@ class Group(db.Model, SerializerMixin):
     is_verified = db.Column(db.Boolean, default=False)
     is_active = db.Column(db.Boolean, default=True)
     
+    # Community restrictions
+    university_restriction = db.Column(db.String(255), nullable=True) # If set, only users from this uni can join
+
+    
     # Relationships
-    creator = db.relationship('Users', backref='created_groups')
-    members = db.relationship('GroupMember', backref='group', lazy=True, cascade='all, delete-orphan')
-    posts = db.relationship('GroupPost', backref='group', lazy=True, cascade='all, delete-orphan')
-    polls = db.relationship('Poll', backref='group', lazy=True)
+    creator = db.relationship('Users', backref='created_communities')
+    members = db.relationship('CommunityMember', backref='community', lazy=True, cascade='all, delete-orphan')
+    posts = db.relationship('CommunityPost', backref='community', lazy=True, cascade='all, delete-orphan')
+    polls = db.relationship('Poll', backref='community', lazy=True)
+    
+    @staticmethod
+    def generate_slug(name: str) -> str:
+        """
+        Generate a unique, SEO-friendly slug from group name.
+        Format: slugified-name-{6-char-random-suffix}
+        Example: "Computer Science Club" -> "computer-science-club-a3x9k2"
+        
+        The random suffix ensures uniqueness without database lookups.
+        """
+        import secrets
+        
+        # Slugify the name
+        slug_base = name.lower().strip()
+        # Remove special characters except spaces and hyphens
+        slug_base = re.sub(r'[^\w\s-]', '', slug_base)
+        # Replace spaces with hyphens
+        slug_base = re.sub(r'[\s_]+', '-', slug_base)
+        # Remove consecutive hyphens
+        slug_base = re.sub(r'-+', '-', slug_base)
+        # Trim hyphens from ends
+        slug_base = slug_base.strip('-')
+        # Limit base length to keep URLs reasonable
+        slug_base = slug_base[:80]
+        
+        # Add random suffix for uniqueness (6 chars = 36^6 = 2.1 billion combinations)
+        suffix = secrets.token_urlsafe(4)[:6].lower()
+        
+        return f"{slug_base}-{suffix}"
     
     def __repr__(self):
-        return f"<Group {self.name}>"    
+        return f"<Community {self.name}>"    
 
-class GroupMember(db.Model, SerializerMixin):
-    __tablename__ = 'group_members'
+class CommunityMember(db.Model, SerializerMixin):
+    __tablename__ = 'community_members'
     
     id = db.Column(db.Integer, primary_key=True)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     role = db.Column(db.String(20), default='member')  # 'admin', 'moderator', 'member'
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
     
     # Relationships
-    user = db.relationship('Users', backref='group_memberships')
+    user = db.relationship('Users', backref='community_memberships')
     
     __table_args__ = (
-        db.UniqueConstraint('group_id', 'user_id', name='unique_group_member'),
+        db.UniqueConstraint('community_id', 'user_id', name='unique_community_member'),
     )
     
     def __repr__(self):
-        return f"<GroupMember {self.user_id} in {self.group_id}>"        
+        return f"<CommunityMember {self.user_id} in {self.community_id}>"        
 
-class GroupPost(db.Model, SerializerMixin):
-    __tablename__ = 'group_posts'
+class CommunityPost(db.Model, SerializerMixin):
+    __tablename__ = 'community_posts'
     
     id = db.Column(db.String, primary_key=True, default=cuid)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
     yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=False)
     is_pinned = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
-    yap = db.relationship('Yap', backref='group_posts')
+    yap = db.relationship('Yap', backref='community_posts')
+    
+    # Relationships
+    hashtags = db.relationship('CommunityPostHashtag', backref='community_post', lazy=True)
     
     def __repr__(self):
-        return f"<GroupPost {self.yap_id} in {self.group_id}>"
+        return f"<CommunityPost {self.yap_id} in {self.community_id}>"
+
+# Community-specific hashtags (separate from main yap hashtags)
+class CommunityHashtag(db.Model):
+    __tablename__ = 'community_hashtags'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    usage_count = db.Column(db.Integer, default=0)  # Track popularity within community
+    
+    # Relationships
+    community = db.relationship('Community', backref='community_hashtags')
+    posts = db.relationship('CommunityPostHashtag', backref='community_hashtag', lazy=True)
+    
+    __table_args__ = (
+        db.UniqueConstraint('name', 'community_id', name='uq_community_hashtag_name_community'),
+    )
+    
+    def __repr__(self):
+        return f"<CommunityHashtag {self.name} in community {self.community_id}>"
+
+# Junction table for CommunityPost and CommunityHashtag (many-to-many)
+class CommunityPostHashtag(db.Model):
+    __tablename__ = 'community_post_hashtags'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    community_post_id = db.Column(db.String, db.ForeignKey('community_posts.id'), nullable=False)
+    community_hashtag_id = db.Column(db.Integer, db.ForeignKey('community_hashtags.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('community_post_id', 'community_hashtag_id', name='uq_community_post_hashtag'),
+    )
+    
+    def __repr__(self):
+        return f"<CommunityPostHashtag Post {self.community_post_id} Hashtag {self.community_hashtag_id}>"
 
 # Polls and Surveys
 class Poll(db.Model, SerializerMixin):
@@ -1170,7 +1309,7 @@ class Poll(db.Model, SerializerMixin):
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     creator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)  # NULL for campus-wide
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True)  # NULL for campus-wide
     poll_type = db.Column(db.String(20), default='single')  # 'single', 'multiple'
     category = db.Column(db.String(50))  # 'campus', 'event', 'course', 'general'
     is_anonymous = db.Column(db.Boolean, default=False)
@@ -1363,7 +1502,7 @@ class EnhancedNotification(db.Model, SerializerMixin):
     sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     
     # Reference fields for different types
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True)
     poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
     achievement_id = db.Column(db.Integer, db.ForeignKey('achievements.id'), nullable=True)
     yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=True)

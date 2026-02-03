@@ -174,6 +174,9 @@ def update_profile():
     user.email = data.get('email', user.email)
     user.phone_no = data.get('phone_no', user.phone_no)
     user.category = data.get('category', user.category)
+    user.university = data.get('university', user.university)
+    user.faculty = data.get('faculty', user.faculty)
+    user.course = data.get('course', user.course)
 
     # Handle profile image upload to R2
     image_file = request.files.get('profile_image')
@@ -262,6 +265,98 @@ def update_settings():
     db.session.commit()
     
     return jsonify({'message': 'Settings updated successfully'}), 200
+
+
+@user_bp.route('/complete-profile', methods=['POST'])
+@jwt_required()
+def complete_profile():
+    try:
+        current_user_id = get_jwt_identity()
+        user = Users.query.get(current_user_id)
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+            
+        data = request.get_json()
+        
+        # Basic fields
+        if 'username' in data:
+            username = data['username'].strip()
+            # Validate username
+            import re
+            if not re.match(r'^[a-z0-9_]+$', username):
+                return jsonify({'error': 'Username can only contain lowercase letters, numbers, and underscores'}), 400
+            
+            # Check uniqueness
+            existing = Users.query.filter(Users.username == username).first()
+            if existing and existing.id != user.id:
+                 return jsonify({'error': 'Username already taken'}), 400
+                 
+            user.username = username
+            
+        if 'display_name' in data:
+            user.display_name = data['display_name']
+            
+        if 'category' in data:
+            user.category = data['category']
+            
+        if 'phone_no' in data:
+            user.phone_no = data['phone_no']
+            
+        if 'bio' in data:
+            user.bio = data['bio']
+            
+        # University fields
+        if 'university' in data:
+            user.university = data['university']
+            
+        if 'faculty' in data:
+            user.faculty = data['faculty']
+            
+        if 'course' in data:
+            user.course = data['course']
+            
+        user.profile_completed = True
+        
+        # LOGIC: Assign University Badge
+        # We assume university name maps to a badge name or we create one
+        if user.university:
+            from models import Badge, UserBadge
+            
+            # Simple mapping or lookup: "University of Nairobi" -> "UoN Member" badge
+            # For now, let's try to find a badge with the university name
+            badge_name = f"{user.university} Member"
+            badge = Badge.query.filter(func.lower(Badge.name) == badge_name.lower()).first()
+            
+            # If badge doesn't exist, maybe assign a generic one or TODO: create it
+            # For this MVP task, let's just log it or assign if exists
+            if badge:
+                # Check if already has badge
+                has_badge = UserBadge.query.filter_by(user_id=user.id, badge_id=badge.id).first()
+                if not has_badge:
+                    new_user_badge = UserBadge(
+                        user_id=user.id,
+                        badge_id=badge.id,
+                        is_displayed=True,
+                        display_order=0
+                    )
+                    db.session.add(new_user_badge)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Profile completed successfully',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'is_profile_complete': True
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 
 
 # Delete user

@@ -1,4 +1,4 @@
-from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge
+from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge, Community
 from flask import request, jsonify, Blueprint, make_response
 from werkzeug.security import generate_password_hash
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -227,7 +227,14 @@ def fetch_yaps():
         per_page = request.args.get('per_page', 10, type=int)
 
         # Fetch yaps with pagination, ordering by creation date (newest first)
-        yaps = Yap.query.order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
+        # Filter out soft-deleted yaps and private community yaps
+        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
+            or_(
+                Yap.community_id.is_(None),  # Regular yaps
+                Community.privacy_type == 'public'  # Only public community yaps
+            )
+        ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
 
         # Serialize yaps into JSON format
         yaps_list = []
@@ -275,6 +282,7 @@ def fetch_yaps():
                         'location': original_yap.location,
                         'user_id': original_yap.user_id,
                         'display_name': original_yap.user.display_name,
+                        'community': original_yap.community,
                         'username': original_yap.user.username,
                         'avatar': original_yap.user.avatar,
                         'original_yap_id': original_yap.original_yap_id,
@@ -305,7 +313,12 @@ def fetch_yaps():
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'slug': yap.community.slug,
+                    'name': yap.community.name,
+                    'icon_image': yap.community.icon_image
+                } if yap.community_id else None
             })
 
         # Return JSON response with pagination info
@@ -447,7 +460,14 @@ def get_user_yaps(user_id):
         per_page = request.args.get('per_page', 10, type=int)
 
         # Fetch user's yaps with pagination, ordering by creation date (newest first)
-        yaps = Yap.query.filter_by(user_id=user_id).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
+        # Filter out private community yaps
+        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+            Yap.user_id == user_id,
+            or_(
+                Yap.community_id.is_(None),  # Regular yaps
+                Community.privacy_type == 'public'  # Only public community yaps
+            )
+        ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
 
         # Serialize yaps into JSON format
         yaps_list = []
@@ -509,7 +529,12 @@ def get_user_yaps(user_id):
                 'likes_count': len(yap.likes),
                 'retweets_count': len(yap.retweets),
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'slug': yap.community.slug,
+                    'name': yap.community.name,
+                    'icon_image': yap.community.icon_image
+                } if yap.community_id else None
             })
 
         return jsonify({
@@ -1271,8 +1296,14 @@ def get_user_profile(username):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
         
-        # Fetch user's yaps with pagination
-        yaps = Yap.query.filter_by(user_id=user.id).order_by(desc(Yap.created_at)).paginate(
+        # Fetch user's yaps with pagination, filtering out private community yaps
+        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+            Yap.user_id == user.id,
+            or_(
+                Yap.community_id.is_(None),  # Regular yaps
+                Community.privacy_type == 'public'  # Only public community yaps
+            )
+        ).order_by(desc(Yap.created_at)).paginate(
             page=page, per_page=per_page, error_out=False
         )
         
@@ -1352,7 +1383,12 @@ def get_user_profile(username):
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'slug': yap.community.slug,
+                    'name': yap.community.name,
+                    'icon_image': yap.community.icon_image
+                } if yap.community_id else None
             })
         
         # Prepare user profile data
@@ -1504,16 +1540,37 @@ def get_personalized_feed():
         per_page = request.args.get('per_page', 20, type=int)
         feed_type = request.args.get('type', 'mixed')  # 'following', 'trending', 'mixed'
         
-        from models import Follow
+        from models import Follow, MutedUser
+        from models_blocking import BlockedUser
         from datetime import datetime, timedelta
+        
+        # Get muted and blocked user IDs to filter from feed
+        muted_user_ids = [m.muted_id for m in MutedUser.query.filter_by(muter_id=user_id).all()]
+        blocked_user_ids = [b.blocked_id for b in BlockedUser.query.filter_by(blocker_id=user_id).all()]
+        blocked_by_ids = [b.blocker_id for b in BlockedUser.query.filter_by(blocked_id=user_id).all()]
+        excluded_user_ids = set(muted_user_ids + blocked_user_ids + blocked_by_ids)
+        
+        # Base filter for non-deleted yaps, excluded users, and private community yaps
+        base_filter = [
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
+            or_(
+                Yap.community_id.is_(None),  # Regular yaps
+                Community.privacy_type == 'public'  # Only public community yaps
+            )
+        ]
+        if excluded_user_ids:
+            base_filter.append(~Yap.user_id.in_(excluded_user_ids))
         
         if feed_type == 'following':
             # Get yaps from users the current user follows
             following_user_ids = db.session.query(Follow.following_id).filter_by(follower_id=user_id).all()
             following_ids = [f.following_id for f in following_user_ids] + [user_id]
+            # Remove excluded users from following list
+            following_ids = [uid for uid in following_ids if uid not in excluded_user_ids]
             
-            yaps = Yap.query.filter(
-                Yap.user_id.in_(following_ids)
+            yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+                Yap.user_id.in_(following_ids),
+                *base_filter
             ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
             
         elif feed_type == 'trending':
@@ -1525,8 +1582,9 @@ def get_personalized_feed():
             recent_cutoff = datetime.utcnow() - timedelta(days=7)
             
             # Simple query to get recent yaps, prioritizing those with engagement
-            yaps = Yap.query.filter(
-                Yap.created_at >= recent_cutoff
+            yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+                Yap.created_at >= recent_cutoff,
+                *base_filter
             ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
         
         # Serialize yaps
@@ -1600,16 +1658,17 @@ def get_personalized_feed():
                 'original_yap': original_yap_data,
                 'is_retweet': bool(yap.original_yap_id),
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
-                'display_name': yap.user.display_name,
-                'username': yap.user.username,
-                'avatar': yap.user.avatar,
-                'original_yap_id': yap.original_yap_id,
                 'replies_count': len(yap.replies),
-                'likes_count': len(yap.retweets),
+                'likes_count': len(yap.likes),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'slug': yap.community.slug,
+                    'name': yap.community.name,
+                    'icon_image': yap.community.icon_image
+                } if yap.community_id else None
             })
         
         return jsonify({
@@ -1620,6 +1679,238 @@ def get_personalized_feed():
             'has_next': yaps.has_next,
             'has_prev': yaps.has_prev,
             'feed_type': feed_type
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# Delete Yap endpoint (soft delete)
+@yap_bp.route('/yaps/<string:yap_id>', methods=['DELETE'])
+@jwt_required()
+def delete_yap(yap_id):
+    try:
+        user_id = get_jwt_identity()
+        
+        # Find the yap
+        yap = Yap.query.get(yap_id)
+        if not yap:
+            return jsonify({'error': 'Yap not found'}), 404
+        
+        # Check ownership - only the author can delete their yap
+        if yap.user_id != user_id:
+            return jsonify({'error': 'You can only delete your own yaps'}), 403
+        
+        # Soft delete the yap
+        yap.soft_delete()
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Yap deleted successfully',
+            'yap_id': yap_id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# Mute user endpoint
+@yap_bp.route('/users/<string:username>/mute', methods=['POST'])
+@jwt_required()
+def toggle_mute_user(username):
+    try:
+        current_user_id = get_jwt_identity()
+        
+        # Find the user to mute
+        target_user = Users.query.filter_by(username=username).first()
+        if not target_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Prevent self-muting
+        if target_user.id == current_user_id:
+            return jsonify({'error': 'You cannot mute yourself'}), 400
+        
+        from models import MutedUser
+        
+        # Check if already muted
+        existing_mute = MutedUser.query.filter_by(
+            muter_id=current_user_id,
+            muted_id=target_user.id
+        ).first()
+        
+        if existing_mute:
+            # Unmute the user
+            db.session.delete(existing_mute)
+            db.session.commit()
+            return jsonify({
+                'message': f'User @{username} unmuted successfully',
+                'muted': False,
+                'username': username
+            }), 200
+        else:
+            # Mute the user
+            new_mute = MutedUser(
+                muter_id=current_user_id,
+                muted_id=target_user.id
+            )
+            db.session.add(new_mute)
+            db.session.commit()
+            return jsonify({
+                'message': f'User @{username} muted successfully',
+                'muted': True,
+                'username': username
+            }), 200
+            
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# Get muted users list
+@yap_bp.route('/users/muted', methods=['GET'])
+@jwt_required()
+def get_muted_users():
+    try:
+        current_user_id = get_jwt_identity()
+        
+        from models import MutedUser
+        
+        muted_users = MutedUser.query.filter_by(muter_id=current_user_id).all()
+        
+        muted_list = []
+        for mute in muted_users:
+            user = Users.query.get(mute.muted_id)
+            if user:
+                muted_list.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'display_name': user.display_name,
+                    'avatar': user.avatar,
+                    'muted_at': mute.created_at.isoformat()
+                })
+        
+        return jsonify({'muted_users': muted_list}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# Block user endpoint
+@yap_bp.route('/users/<string:username>/block', methods=['POST'])
+@jwt_required()
+def toggle_block_user(username):
+    try:
+        current_user_id = get_jwt_identity()
+        
+        # Find the user to block
+        target_user = Users.query.filter_by(username=username).first()
+        if not target_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Prevent self-blocking
+        if target_user.id == current_user_id:
+            return jsonify({'error': 'You cannot block yourself'}), 400
+        
+        from models import Follow
+        from models_blocking import BlockedUser
+        
+        # Check if already blocked
+        existing_block = BlockedUser.query.filter_by(
+            blocker_id=current_user_id,
+            blocked_id=target_user.id
+        ).first()
+        
+        if existing_block:
+            # Unblock the user
+            db.session.delete(existing_block)
+            db.session.commit()
+            return jsonify({
+                'message': f'User @{username} unblocked successfully',
+                'blocked': False,
+                'username': username
+            }), 200
+        else:
+            # Block the user
+            new_block = BlockedUser(
+                blocker_id=current_user_id,
+                blocked_id=target_user.id
+            )
+            db.session.add(new_block)
+            
+            # Also unfollow in both directions
+            Follow.query.filter_by(follower_id=current_user_id, following_id=target_user.id).delete()
+            Follow.query.filter_by(follower_id=target_user.id, following_id=current_user_id).delete()
+            
+            db.session.commit()
+            return jsonify({
+                'message': f'User @{username} blocked successfully',
+                'blocked': True,
+                'username': username
+            }), 200
+            
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# Get blocked users list
+@yap_bp.route('/users/blocked', methods=['GET'])
+@jwt_required()
+def get_blocked_users():
+    try:
+        current_user_id = get_jwt_identity()
+        
+        from models_blocking import BlockedUser
+        
+        blocked_users = BlockedUser.query.filter_by(blocker_id=current_user_id).all()
+        
+        blocked_list = []
+        for block in blocked_users:
+            user = Users.query.get(block.blocked_id)
+            if user:
+                blocked_list.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'display_name': user.display_name,
+                    'avatar': user.avatar,
+                    'blocked_at': block.created_at.isoformat()
+                })
+        
+        return jsonify({'blocked_users': blocked_list}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# Check mute/block status for a user
+@yap_bp.route('/users/<string:username>/moderation-status', methods=['GET'])
+@jwt_required()
+def get_moderation_status(username):
+    try:
+        current_user_id = get_jwt_identity()
+        
+        target_user = Users.query.filter_by(username=username).first()
+        if not target_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        from models import MutedUser
+        from models_blocking import BlockedUser
+        
+        is_muted = MutedUser.query.filter_by(
+            muter_id=current_user_id,
+            muted_id=target_user.id
+        ).first() is not None
+        
+        is_blocked = BlockedUser.query.filter_by(
+            blocker_id=current_user_id,
+            blocked_id=target_user.id
+        ).first() is not None
+        
+        return jsonify({
+            'username': username,
+            'is_muted': is_muted,
+            'is_blocked': is_blocked
         }), 200
         
     except Exception as e:
