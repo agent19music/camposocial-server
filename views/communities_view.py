@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Community, CommunityMember, CommunityPost, Yap, Users, EnhancedNotification, YapMedia, CommunityHashtag, CommunityPostHashtag, Like
+from models import db, Community, CommunityMember, CommunityPost, Yap, Users, EnhancedNotification, YapMedia, CommunityHashtag, CommunityPostHashtag, Like, CommunityInvite
 from datetime import datetime
 from sqlalchemy import or_, and_, func
 from cuid import cuid
@@ -8,6 +8,9 @@ from werkzeug.utils import secure_filename
 import boto3
 import os
 import re
+import secrets
+from datetime import timedelta
+
 
 communities_bp = Blueprint('communities', __name__)
 
@@ -535,12 +538,9 @@ def join_group(community_id):
                 existing_member.joined_at = datetime.utcnow()
         else:
             # Check if community is private
-            if community.privacy_type == 'private':
-                # For private groups, could implement a request system
-                # For now, we'll allow direct joining
-                pass
-            elif community.privacy_type == 'secret':
-                return jsonify({'error': 'You cannot join a secret community without an invitation'}), 403
+            # Check if community is private/secret
+            if community.privacy_type == 'secret' or community.privacy_type == 'private':
+                return jsonify({'error': 'This community is invite-only. You need an invitation link to join.'}), 403
             
             # Check University Restriction
             if community.university_restriction:
@@ -1217,3 +1217,228 @@ def delete_group_post(community_id, post_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
+# ============= Community Invites =============
+
+@communities_bp.route('/communities/<community_slug>/invites', methods=['POST'])
+@jwt_required()
+def create_invite(community_slug):
+    """Create an invite link (members only)"""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        community = Community.query.filter_by(slug=community_slug, is_active=True).first()
+        if not community:
+            return jsonify({'error': 'Community not found'}), 404
+            
+        # Check if user is a member
+        if not is_group_member(community.id, user_id):
+            return jsonify({'error': 'You must be a member to create invites'}), 403
+            
+        # Generate unique token
+        token = secrets.token_urlsafe(8)
+        while CommunityInvite.query.filter_by(token=token).first():
+            token = secrets.token_urlsafe(8)
+            
+        # Set expiry
+        expiry_option = data.get('expiry_option', 'none') # 'none', '12h', '7d', '21d'
+        expires_at = None
+        
+        if expiry_option == '12h':
+            expires_at = datetime.utcnow() + timedelta(hours=12)
+        elif expiry_option == '7d':
+            expires_at = datetime.utcnow() + timedelta(days=7)
+        elif expiry_option == '21d':
+            expires_at = datetime.utcnow() + timedelta(days=21)
+            
+        invite = CommunityInvite(
+            id=cuid(),
+            community_id=community.id,
+            created_by=user_id,
+            token=token,
+            expires_at=expires_at,
+            is_active=True
+        )
+        
+        db.session.add(invite)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Invite created successfully',
+            'invite': {
+                'token': invite.token,
+                'expires_at': invite.expires_at.isoformat() if invite.expires_at else None,
+                'url': f'/invite/{invite.token}'
+            }
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@communities_bp.route('/communities/<community_slug>/invites', methods=['GET'])
+@jwt_required()
+def get_invites(community_slug):
+    """List active invites (admin only)"""
+    try:
+        user_id = get_jwt_identity()
+        
+        community = Community.query.filter_by(slug=community_slug, is_active=True).first()
+        if not community:
+            return jsonify({'error': 'Community not found'}), 404
+            
+        # Check if user is admin
+        user_role = get_user_role_in_group(community.id, user_id)
+        if user_role != 'admin':
+            return jsonify({'error': 'Only admins can view invite lists'}), 403
+            
+        invites = CommunityInvite.query.filter_by(
+            community_id=community.id,
+            is_active=True
+        ).order_by(CommunityInvite.created_at.desc()).all()
+        
+        return jsonify({
+            'invites': [{
+                'id': invite.id,
+                'token': invite.token,
+                'created_at': invite.created_at.isoformat(),
+                'expires_at': invite.expires_at.isoformat() if invite.expires_at else None,
+                'creator_id': invite.created_by,
+                'url': f'/invite/{invite.token}'
+            } for invite in invites]
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@communities_bp.route('/invites/<token>', methods=['DELETE'])
+@jwt_required()
+def revoke_invite(token):
+    """Revoke an invite link"""
+    try:
+        user_id = get_jwt_identity()
+        
+        invite = CommunityInvite.query.filter_by(token=token, is_active=True).first()
+        if not invite:
+            return jsonify({'error': 'Invite not found'}), 404
+            
+        # Check if user is admin of the community
+        user_role = get_user_role_in_group(invite.community_id, user_id)
+        if user_role != 'admin':
+            return jsonify({'error': 'Only admins can revoke invites'}), 403
+            
+        invite.is_active = False
+        db.session.commit()
+        
+        return jsonify({'message': 'Invite revoked successfully'}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@communities_bp.route('/invites/<token>', methods=['GET'])
+def validate_invite(token):
+    """Validate invite and return community info (public)"""
+    try:
+        invite = CommunityInvite.query.filter_by(token=token, is_active=True).first()
+        
+        if not invite:
+            return jsonify({'error': 'Invalid or expired invite link', 'valid': False}), 404
+            
+        if invite.expires_at and invite.expires_at < datetime.utcnow():
+            return jsonify({'error': 'This invite link has expired', 'valid': False}), 410
+            
+        community = Community.query.get(invite.community_id)
+        creator = Users.query.get(community.created_by)
+        
+        return jsonify({
+            'valid': True,
+            'community': {
+                'id': community.id,
+                'slug': community.slug,
+                'name': community.name,
+                'description': community.description,
+                'member_count': community.member_count,
+                'cover_image': community.cover_image,
+                'icon_image': community.icon_image,
+                'university_restriction': community.university_restriction
+            },
+            'inviter': {
+                'id': creator.id,
+                'username': creator.username,
+                'display_name': creator.display_name
+            } if creator else None
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@communities_bp.route('/invites/<token>/accept', methods=['POST'])
+@jwt_required()
+def accept_invite(token):
+    """Accept an invite and join the community"""
+    try:
+        user_id = get_jwt_identity()
+        user = Users.query.get(user_id)
+        
+        invite = CommunityInvite.query.filter_by(token=token, is_active=True).first()
+        if not invite:
+            return jsonify({'error': 'Invalid or expired invite link'}), 404
+            
+        if invite.expires_at and invite.expires_at < datetime.utcnow():
+            return jsonify({'error': 'This invite link has expired'}), 410
+            
+        community = Community.query.get(invite.community_id)
+        
+        # Check if already a member
+        if is_group_member(community.id, user_id):
+            return jsonify({
+                'message': 'You are already a member',
+                'community_slug': community.slug
+            }), 200
+            
+        # Check university restriction
+        if community.university_restriction:
+            if not user.university or community.university_restriction.lower() != user.university.lower():
+                return jsonify({
+                    'error': 'ineligible', 
+                    'message': f'Sorry, this community is restricted to students of {community.university_restriction}'
+                }), 403
+                
+        # Create membership
+        new_member = CommunityMember(
+            community_id=community.id,
+            user_id=user_id,
+            role='member'
+        )
+        db.session.add(new_member)
+        
+        # Update counts
+        update_group_member_count(community.id)
+        
+        # Send notification to inviter if different from joiner
+        if invite.created_by != user_id:
+            notification = EnhancedNotification(
+                type='GROUP_INVITE_ACCEPTED',
+                priority='low',
+                recipient_id=invite.created_by,
+                sender_id=user_id,
+                community_id=community.id,
+                title='Invite Accepted',
+                message=f'{user.username} joined {community.name} using your invite link',
+                action_url=f'/communities/{community.slug}'
+            )
+            db.session.add(notification)
+            
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Successfully joined community',
+            'community_slug': community.slug
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+

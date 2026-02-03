@@ -875,8 +875,14 @@ def get_trending_yaps():
             ).label('trending_score')
         ).outerjoin(Like, Like.yap_id == Yap.id
         ).outerjoin(Reply, Reply.yap_id == Yap.id
+        ).outerjoin(Community, Yap.community_id == Community.id
         ).filter(
-            Yap.created_at >= datetime.utcnow() - timedelta(days=7)  # Only yaps from last week
+            Yap.created_at >= datetime.utcnow() - timedelta(days=7),  # Only yaps from last week
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
+            or_(
+                Yap.community_id.is_(None),  # Regular yaps
+                Community.privacy_type == 'public'  # Only public community yaps
+            )
         ).group_by(Yap.id
         ).order_by(func.count(Like.id).desc(), Yap.created_at.desc()
         ).paginate(page=page, per_page=per_page, error_out=False)

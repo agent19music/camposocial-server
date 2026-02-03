@@ -1173,7 +1173,7 @@ class Community(db.Model, SerializerMixin):
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     category = db.Column(db.String(100))  # 'study', 'hobby', 'professional', 'event_planning', 'other'
-    privacy_type = db.Column(db.String(20), default='public')  # 'public', 'private', 'secret'
+    privacy_type = db.Column(db.String(20), default='public')  # 'public', 'secret'
     cover_image = db.Column(db.String(255), default=DEFAULT_COVER_IMAGE)
     icon_image = db.Column(db.String(255), default=DEFAULT_ICON_IMAGE)
     rules = db.Column(db.Text)
@@ -1225,6 +1225,25 @@ class Community(db.Model, SerializerMixin):
     
     def __repr__(self):
         return f"<Community {self.name}>"    
+
+class CommunityInvite(db.Model, SerializerMixin):
+    __tablename__ = 'community_invites'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    token = db.Column(db.String(12), unique=True, nullable=False)  # Short code like "xK9m2Pq4"
+    
+    expires_at = db.Column(db.DateTime, nullable=True)  # None = never expires
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    community = db.relationship('Community', backref='invites')
+    creator = db.relationship('Users', backref='created_invites')
+
+    def __repr__(self):
+        return f"<CommunityInvite {self.token} for {self.community_id}>"
 
 class CommunityMember(db.Model, SerializerMixin):
     __tablename__ = 'community_members'
