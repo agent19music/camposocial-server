@@ -63,11 +63,14 @@ if [ "${MIGRATE_ONLY:-false}" = "true" ]; then
 fi
 
 # ============================================================================
-# Optional: Seed badges
+# Optional: Seed badges (including university badges)
 # ============================================================================
 if [ "${SEED_BADGES:-false}" = "true" ]; then
-    log "Seeding badges..."
-    python seed_badges.py || log "WARNING: Badge seeding failed (may already exist)"
+    log "Seeding default badges..."
+    python seed_badges.py || log "WARNING: Default badge seeding failed (may already exist)"
+
+    log "Seeding university badges..."
+    python seed_university_badges.py || log "WARNING: University badge seeding failed (may already exist)"
 fi
 
 # ============================================================================

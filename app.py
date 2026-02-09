@@ -207,11 +207,7 @@ def create_app():
     
     # Advanced messaging functionality is now merged into message_bp
     
-    # ========== PHASE 8 BLUEPRINTS ==========
-    # Register Groups management blueprint
-    from views.communities_view import communities_bp
-    app.register_blueprint(communities_bp, url_prefix='/camposocial/api')
-    
+
     # Register Polls and Surveys blueprint
     from views.polls_view import polls_bp
     app.register_blueprint(polls_bp, url_prefix='/camposocial/api')

@@ -1,9 +1,10 @@
-from models import db, Users, Events, Follow
+from models import db, Users, Events, Follow, Community
 from flask import request, jsonify, Blueprint
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import or_, func
+from sqlalchemy.exc import IntegrityError
 import base64
 import os
 import boto3
@@ -200,9 +201,46 @@ def update_profile():
         except Exception as e:
             return jsonify({'error': f"Failed to upload header image: {str(e)}"}), 500
 
+    # LOGIC: Auto-Award University Badge (if university is set)
+    badge_award_result = None
+    if user.university:
+        try:
+            from views.badges_view import auto_award_university_badge
+            
+            logger.info(f"Update profile: Attempting badge auto-award for user {user.id}, university: {user.university}")
+            
+            badge_award_result = auto_award_university_badge(
+                user_id=user.id, 
+                university_name=user.university,
+                commit=False  # We'll commit with the profile update
+            )
+            
+            if badge_award_result['success']:
+                if badge_award_result['already_owned']:
+                    logger.info(f"User {user.id} already has university badge")
+                else:
+                    logger.info(f"Badge {badge_award_result['badge_id']} will be awarded to user {user.id}")
+            else:
+                logger.warning(f"Badge award failed in update_profile: {badge_award_result['message']}")
+                
+        except ImportError as e:
+            logger.error(f"Could not import badge award function: {e}")
+        except Exception as e:
+            logger.error(f"Error in badge award during profile update: {str(e)}", exc_info=True)
+
     db.session.commit()
 
-    return jsonify({'message': 'Profile updated successfully'})
+    response = {'message': 'Profile updated successfully'}
+    
+    # Include badge info if award was attempted
+    if badge_award_result and badge_award_result['success'] and not badge_award_result.get('already_owned'):
+        response['badge_awarded'] = True
+        response['badge_info'] = {
+            'badge_id': badge_award_result.get('badge_id'),
+            'badge_name': badge_award_result.get('badge_name')
+        }
+    
+    return jsonify(response)
 
 
 # Get user settings
@@ -267,17 +305,28 @@ def update_settings():
     return jsonify({'message': 'Settings updated successfully'}), 200
 
 
+import logging
+logger = logging.getLogger(__name__)
+
 @user_bp.route('/complete-profile', methods=['POST'])
 @jwt_required()
 def complete_profile():
+    """
+    Complete user profile after OAuth signup.
+    Auto-awards university badge if university is set.
+    """
+    badge_award_result = None
+    
     try:
         current_user_id = get_jwt_identity()
         user = Users.query.get(current_user_id)
         
         if not user:
+            logger.warning(f"Complete profile: User {current_user_id} not found")
             return jsonify({'error': 'User not found'}), 404
             
         data = request.get_json()
+        logger.info(f"Complete profile request for user {current_user_id}: {data}")
         
         # Basic fields
         if 'username' in data:
@@ -318,44 +367,63 @@ def complete_profile():
             
         user.profile_completed = True
         
-        # LOGIC: Assign University Badge
-        # We assume university name maps to a badge name or we create one
+        # LOGIC: Auto-Award University Badge using the centralized helper
         if user.university:
-            from models import Badge, UserBadge
-            
-            # Simple mapping or lookup: "University of Nairobi" -> "UoN Member" badge
-            # For now, let's try to find a badge with the university name
-            badge_name = f"{user.university} Member"
-            badge = Badge.query.filter(func.lower(Badge.name) == badge_name.lower()).first()
-            
-            # If badge doesn't exist, maybe assign a generic one or TODO: create it
-            # For this MVP task, let's just log it or assign if exists
-            if badge:
-                # Check if already has badge
-                has_badge = UserBadge.query.filter_by(user_id=user.id, badge_id=badge.id).first()
-                if not has_badge:
-                    new_user_badge = UserBadge(
-                        user_id=user.id,
-                        badge_id=badge.id,
-                        is_displayed=True,
-                        display_order=0
-                    )
-                    db.session.add(new_user_badge)
+            try:
+                from views.badges_view import auto_award_university_badge
+                
+                logger.info(f"Attempting to auto-award university badge for user {user.id}, university: {user.university}")
+                
+                # Don't commit here - we'll commit everything together
+                badge_award_result = auto_award_university_badge(
+                    user_id=user.id, 
+                    university_name=user.university,
+                    commit=False
+                )
+                
+                if badge_award_result['success']:
+                    if badge_award_result['already_owned']:
+                        logger.info(f"User {user.id} already has badge: {badge_award_result['badge_name']}")
+                    else:
+                        logger.info(f"Badge {badge_award_result['badge_id']} will be awarded to user {user.id}")
+                else:
+                    logger.warning(f"Badge award failed: {badge_award_result['message']}")
+                    
+            except ImportError as e:
+                logger.error(f"Could not import badge award function: {e}")
+                badge_award_result = {'success': False, 'message': 'Badge system temporarily unavailable'}
+            except Exception as e:
+                logger.error(f"Error in badge award logic: {str(e)}", exc_info=True)
+                badge_award_result = {'success': False, 'message': str(e)}
         
+        # Commit all changes together
         db.session.commit()
+        logger.info(f"Profile completed and committed for user {user.id}")
         
-        return jsonify({
+        response_data = {
             'message': 'Profile completed successfully',
             'user': {
                 'id': user.id,
                 'username': user.username,
                 'is_profile_complete': True
             }
-        }), 200
+        }
+        
+        # Include badge award info in response
+        if badge_award_result:
+            response_data['badge_awarded'] = badge_award_result['success'] and not badge_award_result.get('already_owned', False)
+            response_data['badge_info'] = {
+                'badge_id': badge_award_result.get('badge_id'),
+                'badge_name': badge_award_result.get('badge_name'),
+                'message': badge_award_result.get('message')
+            }
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error completing profile for user {current_user_id}: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Failed to complete profile. Please try again.'}), 500
 
 
 
@@ -365,12 +433,33 @@ def complete_profile():
 def delete_user():
     current_user_id = get_jwt_identity()
     user = Users.query.get(current_user_id)
-    if user:
+    
+    if not user:
+        return jsonify({"message": "User you are trying to delete is not found!"}), 404
+
+    # Check for critical dependencies (like owned communities)
+    owned_communities = Community.query.filter_by(created_by=user.id).all()
+    if owned_communities:
+        community_names = ", ".join([c.name for c in owned_communities])
+        return jsonify({
+            "message": f"Unable to delete account. You are the owner of the following communities: {community_names}. Please transfer ownership or delete them first."
+        }), 400
+
+    try:
         db.session.delete(user)
         db.session.commit()
         return jsonify({"message": "User deleted successfully"}), 200
-    else:
-        return jsonify({"message": "User you are trying to delete is not found!"}), 404
+    except IntegrityError as e:
+        db.session.rollback()
+        # Log error in production
+        print(f"Delete Account IntegrityError: {str(e)}")
+        # Check for other common constraints
+        return jsonify({
+            "message": "Unable to delete account due to existing data relationships. Please clear your created data (e.g. Polls, Orders) first or contact support."
+        }), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": f"An error occurred: {str(e)}"}), 500
 
 @user_bp.route('/user-events', methods=['GET'])
 @jwt_required()

@@ -1,4 +1,4 @@
-from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge, Community
+from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge
 from flask import request, jsonify, Blueprint, make_response
 from werkzeug.security import generate_password_hash
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -227,13 +227,9 @@ def fetch_yaps():
         per_page = request.args.get('per_page', 10, type=int)
 
         # Fetch yaps with pagination, ordering by creation date (newest first)
-        # Filter out soft-deleted yaps and private community yaps
-        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
-            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
-            or_(
-                Yap.community_id.is_(None),  # Regular yaps
-                Community.privacy_type == 'public'  # Only public community yaps
-            )
+        # Filter out soft-deleted yaps
+        yaps = Yap.query.filter(
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None))
         ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
 
         # Serialize yaps into JSON format
@@ -282,7 +278,6 @@ def fetch_yaps():
                         'location': original_yap.location,
                         'user_id': original_yap.user_id,
                         'display_name': original_yap.user.display_name,
-                        'community': original_yap.community,
                         'username': original_yap.user.username,
                         'avatar': original_yap.user.avatar,
                         'original_yap_id': original_yap.original_yap_id,
@@ -313,12 +308,7 @@ def fetch_yaps():
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
-                'community': {
-                    'slug': yap.community.slug,
-                    'name': yap.community.name,
-                    'icon_image': yap.community.icon_image
-                } if yap.community_id else None
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
             })
 
         # Return JSON response with pagination info
@@ -460,14 +450,7 @@ def get_user_yaps(user_id):
         per_page = request.args.get('per_page', 10, type=int)
 
         # Fetch user's yaps with pagination, ordering by creation date (newest first)
-        # Filter out private community yaps
-        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
-            Yap.user_id == user_id,
-            or_(
-                Yap.community_id.is_(None),  # Regular yaps
-                Community.privacy_type == 'public'  # Only public community yaps
-            )
-        ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
+        yaps = Yap.query.filter_by(user_id=user_id).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
 
         # Serialize yaps into JSON format
         yaps_list = []
@@ -529,12 +512,7 @@ def get_user_yaps(user_id):
                 'likes_count': len(yap.likes),
                 'retweets_count': len(yap.retweets),
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
-                'community': {
-                    'slug': yap.community.slug,
-                    'name': yap.community.name,
-                    'icon_image': yap.community.icon_image
-                } if yap.community_id else None
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
             })
 
         return jsonify({
@@ -875,14 +853,8 @@ def get_trending_yaps():
             ).label('trending_score')
         ).outerjoin(Like, Like.yap_id == Yap.id
         ).outerjoin(Reply, Reply.yap_id == Yap.id
-        ).outerjoin(Community, Yap.community_id == Community.id
         ).filter(
-            Yap.created_at >= datetime.utcnow() - timedelta(days=7),  # Only yaps from last week
-            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
-            or_(
-                Yap.community_id.is_(None),  # Regular yaps
-                Community.privacy_type == 'public'  # Only public community yaps
-            )
+            Yap.created_at >= datetime.utcnow() - timedelta(days=7)  # Only yaps from last week
         ).group_by(Yap.id
         ).order_by(func.count(Like.id).desc(), Yap.created_at.desc()
         ).paginate(page=page, per_page=per_page, error_out=False)
@@ -1302,14 +1274,8 @@ def get_user_profile(username):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
         
-        # Fetch user's yaps with pagination, filtering out private community yaps
-        yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
-            Yap.user_id == user.id,
-            or_(
-                Yap.community_id.is_(None),  # Regular yaps
-                Community.privacy_type == 'public'  # Only public community yaps
-            )
-        ).order_by(desc(Yap.created_at)).paginate(
+        # Fetch user's yaps with pagination
+        yaps = Yap.query.filter_by(user_id=user.id).order_by(desc(Yap.created_at)).paginate(
             page=page, per_page=per_page, error_out=False
         )
         
@@ -1389,12 +1355,7 @@ def get_user_profile(username):
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
-                'community': {
-                    'slug': yap.community.slug,
-                    'name': yap.community.name,
-                    'icon_image': yap.community.icon_image
-                } if yap.community_id else None
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
             })
         
         # Prepare user profile data
@@ -1556,13 +1517,9 @@ def get_personalized_feed():
         blocked_by_ids = [b.blocker_id for b in BlockedUser.query.filter_by(blocked_id=user_id).all()]
         excluded_user_ids = set(muted_user_ids + blocked_user_ids + blocked_by_ids)
         
-        # Base filter for non-deleted yaps, excluded users, and private community yaps
+        # Base filter for non-deleted yaps and excluded users
         base_filter = [
-            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None)),
-            or_(
-                Yap.community_id.is_(None),  # Regular yaps
-                Community.privacy_type == 'public'  # Only public community yaps
-            )
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None))
         ]
         if excluded_user_ids:
             base_filter.append(~Yap.user_id.in_(excluded_user_ids))
@@ -1574,7 +1531,7 @@ def get_personalized_feed():
             # Remove excluded users from following list
             following_ids = [uid for uid in following_ids if uid not in excluded_user_ids]
             
-            yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+            yaps = Yap.query.filter(
                 Yap.user_id.in_(following_ids),
                 *base_filter
             ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
@@ -1588,7 +1545,7 @@ def get_personalized_feed():
             recent_cutoff = datetime.utcnow() - timedelta(days=7)
             
             # Simple query to get recent yaps, prioritizing those with engagement
-            yaps = Yap.query.outerjoin(Community, Yap.community_id == Community.id).filter(
+            yaps = Yap.query.filter(
                 Yap.created_at >= recent_cutoff,
                 *base_filter
             ).order_by(desc(Yap.created_at)).paginate(page=page, per_page=per_page, error_out=False)
@@ -1664,17 +1621,16 @@ def get_personalized_feed():
                 'original_yap': original_yap_data,
                 'is_retweet': bool(yap.original_yap_id),
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
+                'display_name': yap.user.display_name,
+                'username': yap.user.username,
+                'avatar': yap.user.avatar,
+                'original_yap_id': yap.original_yap_id,
                 'replies_count': len(yap.replies),
-                'likes_count': len(yap.likes),
+                'likes_count': len(yap.retweets),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
-                'community': {
-                    'slug': yap.community.slug,
-                    'name': yap.community.name,
-                    'icon_image': yap.community.icon_image
-                } if yap.community_id else None
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
             })
         
         return jsonify({
@@ -1918,6 +1874,543 @@ def get_moderation_status(username):
             'is_muted': is_muted,
             'is_blocked': is_blocked
         }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ============ PUBLIC ENDPOINTS (No Authentication Required) ============
+
+@yap_bp.route('/public/yaps/top', methods=['GET'])
+def get_top_yaps():
+    """
+    Public endpoint: Get top yaps sorted by weighted engagement (likes + replies + retweets).
+    Uses SQL aggregation with featured account multipliers for efficient calculation.
+    Returns limited fields suitable for public preview.
+    """
+    try:
+        limit = request.args.get('limit', 15, type=int)
+        
+        # Create aliases for user joins
+        LikeUser = db.aliased(Users)
+        ReplyUser = db.aliased(Users)
+        RetweetUser = db.aliased(Users)
+        RetweetYap = db.aliased(Yap)
+        YapAlias = db.aliased(Yap)  # Alias for outer query
+        
+        # Subquery for weighted like engagement (correlated subquery)
+        like_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (LikeUser.engagement_multiplier.isnot(None), LikeUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(Like).join(
+            LikeUser, LikeUser.id == Like.user_id
+        ).filter(
+            Like.yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Subquery for weighted reply engagement (correlated subquery)
+        reply_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReplyUser.engagement_multiplier.isnot(None), ReplyUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(Reply).join(
+            ReplyUser, ReplyUser.id == Reply.user_id
+        ).filter(
+            Reply.yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Subquery for weighted retweet engagement (correlated subquery)
+        retweet_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (RetweetUser.engagement_multiplier.isnot(None), RetweetUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(RetweetYap).join(
+            RetweetUser, RetweetUser.id == RetweetYap.user_id
+        ).filter(
+            RetweetYap.original_yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Calculate total weighted engagement
+        weighted_engagement = (
+            func.coalesce(like_score, 0) +
+            func.coalesce(reply_score, 0) +
+            func.coalesce(retweet_score, 0)
+        ).label('weighted_engagement')
+        
+        # Main query with weighted engagement calculation
+        yaps_query = db.session.query(
+            YapAlias,
+            weighted_engagement
+        ).join(
+            Users, Users.id == YapAlias.user_id
+        ).filter(
+            or_(YapAlias.is_deleted == False, YapAlias.is_deleted.is_(None)),
+            Users.is_private == False  # Exclude private accounts
+        ).group_by(
+            YapAlias.id
+        ).order_by(
+            weighted_engagement.desc()
+        ).limit(limit)
+        
+        results = yaps_query.all()
+        top_yaps = [yap for yap, _ in results]
+        
+        # Serialize yaps
+        yaps_list = []
+        for yap in top_yaps:
+            # Get user's displayed badges
+            user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                UserBadge.user_id == yap.user_id,
+                UserBadge.is_displayed == True
+            ).order_by(UserBadge.display_order).limit(3).all()
+            
+            badges_data = []
+            for user_badge, badge in user_badges:
+                badges_data.append({
+                    'id': badge.id,
+                    'name': badge.name,
+                    'image_url': badge.image_url,
+                    'is_animated': badge.is_animated
+                })
+            
+            # If this is a retweet, get original yap data
+            original_yap_data = None
+            if yap.original_yap_id:
+                original_yap = Yap.query.get(yap.original_yap_id)
+                if original_yap and not original_yap.user.is_private:
+                    original_user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                        UserBadge.user_id == original_yap.user_id,
+                        UserBadge.is_displayed == True
+                    ).order_by(UserBadge.display_order).limit(3).all()
+                    
+                    original_badges_data = []
+                    for user_badge, badge in original_user_badges:
+                        original_badges_data.append({
+                            'id': badge.id,
+                            'name': badge.name,
+                            'image_url': badge.image_url,
+                            'is_animated': badge.is_animated
+                        })
+                    
+                    original_yap_data = {
+                        'id': original_yap.id,
+                        'content': original_yap.content,
+                        'timestamp': original_yap.created_at.isoformat() if original_yap.created_at else None,
+                        'user_id': original_yap.user_id,
+                        'display_name': original_yap.user.display_name,
+                        'username': original_yap.user.username,
+                        'avatar': original_yap.user.avatar,
+                        'replies_count': len(original_yap.replies),
+                        'likes_count': len(original_yap.likes),
+                        'retweets_count': len(original_yap.retweets),
+                        'badges': original_badges_data,
+                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
+                    }
+            
+            yaps_list.append({
+                'id': yap.id,
+                'content': yap.content,
+                'timestamp': yap.created_at.isoformat() if yap.created_at else None,
+                'location': yap.location,
+                'user_id': yap.user_id,
+                'display_name': yap.user.display_name,
+                'username': yap.user.username,
+                'avatar': yap.user.avatar,
+                'original_yap_id': yap.original_yap_id,
+                'original_yap': original_yap_data,
+                'is_retweet': bool(yap.original_yap_id),
+                'is_quote': bool(yap.original_yap_id and yap.content.strip()),
+                'replies_count': len(yap.replies),
+                'likes_count': len(yap.likes),
+                'retweets_count': len(yap.retweets),
+                'badges': badges_data,
+                'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+            })
+        
+        return jsonify({
+            'yaps': yaps_list,
+            'count': len(yaps_list)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@yap_bp.route('/public/yaps/profile/<string:username>', methods=['GET'])
+def get_public_user_profile(username):
+    """
+    Public endpoint: Get user profile with top yaps by engagement (not chronological).
+    Excludes private accounts.
+    """
+    try:
+        # Find user by username
+        user = Users.query.filter_by(username=username).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # If user is private, return limited info
+        if user.is_private:
+            return jsonify({
+                'error': 'This account is private',
+                'is_private': True,
+                'username': user.username,
+                'display_name': user.display_name,
+                'avatar': user.avatar
+            }), 200
+        
+        from models import Follow
+        
+        # Get follower and following counts
+        follower_count = Follow.query.filter_by(following_id=user.id).count()
+        following_count = Follow.query.filter_by(follower_id=user.id).count()
+        
+        # Get user's displayed badges
+        user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+            UserBadge.user_id == user.id,
+            UserBadge.is_displayed == True
+        ).order_by(UserBadge.display_order).limit(3).all()
+        
+        badges_data = []
+        for user_badge, badge in user_badges:
+            badges_data.append({
+                'id': badge.id,
+                'name': badge.name,
+                'image_url': badge.image_url,
+                'is_animated': badge.is_animated
+            })
+        
+        # Create aliases for user joins
+        LikeUser = db.aliased(Users)
+        ReplyUser = db.aliased(Users)
+        RetweetUser = db.aliased(Users)
+        RetweetYap = db.aliased(Yap)
+        YapAlias = db.aliased(Yap)  # Alias for outer query
+        
+        # Subquery for weighted like engagement (correlated subquery)
+        like_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (LikeUser.engagement_multiplier.isnot(None), LikeUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(Like).join(
+            LikeUser, LikeUser.id == Like.user_id
+        ).filter(
+            Like.yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Subquery for weighted reply engagement (correlated subquery)
+        reply_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReplyUser.engagement_multiplier.isnot(None), ReplyUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(Reply).join(
+            ReplyUser, ReplyUser.id == Reply.user_id
+        ).filter(
+            Reply.yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Subquery for weighted retweet engagement (correlated subquery)
+        retweet_score = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (RetweetUser.engagement_multiplier.isnot(None), RetweetUser.engagement_multiplier),
+                        else_=1.0
+                    )
+                ),
+                0
+            )
+        ).select_from(RetweetYap).join(
+            RetweetUser, RetweetUser.id == RetweetYap.user_id
+        ).filter(
+            RetweetYap.original_yap_id == YapAlias.id
+        ).correlate(YapAlias).scalar_subquery()
+        
+        # Calculate total weighted engagement
+        weighted_engagement = (
+            func.coalesce(like_score, 0) +
+            func.coalesce(reply_score, 0) +
+            func.coalesce(retweet_score, 0)
+        ).label('weighted_engagement')
+        
+        # Fetch user's yaps with weighted engagement (excluding soft-deleted)
+        yaps_query = db.session.query(
+            YapAlias,
+            weighted_engagement
+        ).filter_by(
+            user_id=user.id
+        ).filter(
+            or_(YapAlias.is_deleted == False, YapAlias.is_deleted.is_(None))
+        ).group_by(
+            YapAlias.id
+        ).order_by(
+            weighted_engagement.desc()
+        ).limit(10)
+        
+        results = yaps_query.all()
+        top_yaps = [yap for yap, _ in results]
+        
+        # Serialize top yaps
+        yaps_list = []
+        for yap in top_yaps:
+            yap_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                UserBadge.user_id == yap.user_id,
+                UserBadge.is_displayed == True
+            ).order_by(UserBadge.display_order).limit(3).all()
+            
+            badges_for_yap = []
+            for user_badge, badge in yap_badges:
+                badges_for_yap.append({
+                    'id': badge.id,
+                    'name': badge.name,
+                    'image_url': badge.image_url,
+                    'is_animated': badge.is_animated
+                })
+            
+            # Handle retweets
+            original_yap_data = None
+            if yap.original_yap_id:
+                original_yap = Yap.query.get(yap.original_yap_id)
+                if original_yap and not original_yap.user.is_private:
+                    original_user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                        UserBadge.user_id == original_yap.user_id,
+                        UserBadge.is_displayed == True
+                    ).order_by(UserBadge.display_order).limit(3).all()
+                    
+                    original_badges_data = []
+                    for user_badge, badge in original_user_badges:
+                        original_badges_data.append({
+                            'id': badge.id,
+                            'name': badge.name,
+                            'image_url': badge.image_url,
+                            'is_animated': badge.is_animated
+                        })
+                    
+                    original_yap_data = {
+                        'id': original_yap.id,
+                        'content': original_yap.content,
+                        'timestamp': original_yap.created_at.isoformat() if original_yap.created_at else None,
+                        'user_id': original_yap.user_id,
+                        'display_name': original_yap.user.display_name,
+                        'username': original_yap.user.username,
+                        'avatar': original_yap.user.avatar,
+                        'replies_count': len(original_yap.replies),
+                        'likes_count': len(original_yap.likes),
+                        'retweets_count': len(original_yap.retweets),
+                        'badges': original_badges_data,
+                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
+                    }
+            
+            yaps_list.append({
+                'id': yap.id,
+                'content': yap.content,
+                'timestamp': yap.created_at.isoformat() if yap.created_at else None,
+                'location': yap.location,
+                'user_id': yap.user_id,
+                'display_name': yap.user.display_name,
+                'username': yap.user.username,
+                'avatar': yap.user.avatar,
+                'original_yap_id': yap.original_yap_id,
+                'original_yap': original_yap_data,
+                'is_retweet': bool(yap.original_yap_id),
+                'is_quote': bool(yap.original_yap_id and yap.content.strip()),
+                'replies_count': len(yap.replies),
+                'likes_count': len(yap.likes),
+                'retweets_count': len(yap.retweets),
+                'badges': badges_for_yap,
+                'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+            })
+        
+        # Build profile response
+        profile_data = {
+            'id': user.id,
+            'username': user.username,
+            'display_name': user.display_name,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'bio': user.bio,
+            'avatar': user.avatar,
+            'yap_header_img': user.yap_header_img,
+            'university': user.university,
+            'faculty': user.faculty,
+            'course': user.course,
+            'followers_count': follower_count,
+            'following_count': following_count,
+            'yaps_count': len(user_yaps),
+            'join_date': user.created_at.isoformat() if user.created_at else None,
+            'badges': badges_data,
+            'is_private': False,
+            'yaps': yaps_list
+        }
+        
+        return jsonify(profile_data), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@yap_bp.route('/public/yaps/<string:slug>', methods=['GET'])
+def get_public_yap_by_slug(slug):
+    """
+    Public endpoint: Get single yap by slug (format: yapId-nanoid).
+    Returns yap with limited replies (top 5 by engagement).
+    """
+    try:
+        # Extract yap ID from slug (format: yapId-nanoid)
+        # Find the last hyphen and take everything before it
+        last_hyphen_index = slug.rfind('-')
+        if last_hyphen_index == -1:
+            yap_id = slug
+        else:
+            yap_id = slug[:last_hyphen_index]
+        
+        yap = Yap.query.get(yap_id)
+        if not yap:
+            return jsonify({'error': 'Yap not found'}), 404
+        
+        # Check if yap author is private
+        if yap.user.is_private:
+            return jsonify({'error': 'This yap is from a private account'}), 403
+        
+        # Get user's displayed badges
+        user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+            UserBadge.user_id == yap.user_id,
+            UserBadge.is_displayed == True
+        ).order_by(UserBadge.display_order).limit(3).all()
+        
+        badges_data = []
+        for user_badge, badge in user_badges:
+            badges_data.append({
+                'id': badge.id,
+                'name': badge.name,
+                'image_url': badge.image_url,
+                'is_animated': badge.is_animated
+            })
+        
+        # Handle retweets
+        original_yap_data = None
+        if yap.original_yap_id:
+            original_yap = Yap.query.get(yap.original_yap_id)
+            if original_yap and not original_yap.user.is_private:
+                original_user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                    UserBadge.user_id == original_yap.user_id,
+                    UserBadge.is_displayed == True
+                ).order_by(UserBadge.display_order).limit(3).all()
+                
+                original_badges_data = []
+                for user_badge, badge in original_user_badges:
+                    original_badges_data.append({
+                        'id': badge.id,
+                        'name': badge.name,
+                        'image_url': badge.image_url,
+                        'is_animated': badge.is_animated
+                    })
+                
+                original_yap_data = {
+                    'id': original_yap.id,
+                    'content': original_yap.content,
+                    'timestamp': original_yap.created_at.isoformat() if original_yap.created_at else None,
+                    'user_id': original_yap.user_id,
+                    'display_name': original_yap.user.display_name,
+                    'username': original_yap.user.username,
+                    'avatar': original_yap.user.avatar,
+                    'replies_count': len(original_yap.replies),
+                    'likes_count': len(original_yap.likes),
+                    'retweets_count': len(original_yap.retweets),
+                    'badges': original_badges_data,
+                    'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
+                }
+        
+        # Get top-level replies and sort by engagement (likes + child replies)
+        top_level_replies = [r for r in yap.replies if not r.parent_reply_id]
+        
+        # Calculate engagement for replies
+        replies_with_engagement = []
+        for reply in top_level_replies:
+            # Skip replies from private users
+            if reply.user.is_private:
+                continue
+            engagement = len([l for l in reply.likes if l.reply_id == reply.id]) + len(reply.child_replies)
+            replies_with_engagement.append((reply, engagement))
+        
+        # Sort by engagement and take top 5
+        replies_with_engagement.sort(key=lambda x: x[1], reverse=True)
+        top_replies = [reply for reply, _ in replies_with_engagement[:5]]
+        
+        # Serialize replies
+        replies_list = []
+        for reply in top_replies:
+            replies_list.append({
+                'id': reply.id,
+                'content': reply.content,
+                'created_at': reply.created_at.isoformat() if reply.created_at else None,
+                'parent_reply_id': reply.parent_reply_id,
+                'user': {
+                    'id': str(reply.user.id),
+                    'username': reply.user.username,
+                    'display_name': reply.user.display_name,
+                    'avatar': reply.user.avatar
+                },
+                'likes_count': len([l for l in reply.likes if l.reply_id == reply.id]),
+                'child_replies_count': len(reply.child_replies)
+            })
+        
+        # Serialize yap
+        yap_data = {
+            'id': yap.id,
+            'content': yap.content,
+            'timestamp': yap.created_at.isoformat() if yap.created_at else None,
+            'location': yap.location,
+            'user_id': yap.user_id,
+            'display_name': yap.user.display_name,
+            'username': yap.user.username,
+            'avatar': yap.user.avatar,
+            'original_yap_id': yap.original_yap_id,
+            'original_yap': original_yap_data,
+            'is_retweet': bool(yap.original_yap_id),
+            'is_quote': bool(yap.original_yap_id and yap.content.strip()),
+            'replies': replies_list,
+            'replies_count': len(yap.replies),
+            'likes_count': len(yap.likes),
+            'retweets_count': len(yap.retweets),
+            'badges': badges_data,
+            'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
+            'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+        }
+        
+        return jsonify(yap_data), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

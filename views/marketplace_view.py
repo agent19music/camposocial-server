@@ -126,6 +126,57 @@ def get_products():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+# ============ PUBLIC ENDPOINTS (No Authentication Required) ============
+
+@marketplace_bp.route('/public/products/featured', methods=['GET'])
+def get_public_featured_products():
+    """
+    Public endpoint: Get featured/top products for preview.
+    Returns limited fields suitable for public browsing.
+    """
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        
+        # Get products sorted by rating and creation date (featured = high rating + recent)
+        products = Products.query.order_by(
+            func.coalesce(func.avg(Reviews.rating), 0).desc(),
+            Products.created_at.desc()
+        ).limit(limit).all()
+        
+        result = []
+        for product in products:
+            # Calculate average rating
+            avg_rating = product.average_rating()
+            
+            result.append({
+                'id': product.id,
+                'slug': product.slug,
+                'title': product.title,
+                'description': product.description[:200] + '...' if product.description and len(product.description) > 200 else product.description,  # Truncate for preview
+                'brand': product.brand,
+                'price': product.price,
+                'category': product.category,
+                'created_at': product.created_at.isoformat() if product.created_at else None,
+                'average_rating': avg_rating,
+                'images': [image.image_url for image in product.images[:3]],  # Limit to first 3 images
+                'seller': {
+                    'name': product.seller.display_name if product.seller else None,
+                    'avatar': product.seller.avatar if product.seller else None,
+                    'verified': product.seller.is_verified if product.seller else None,
+                    'id': product.seller.id if product.seller else None
+                }
+            })
+        
+        return jsonify({
+            'products': result,
+            'count': len(result)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @marketplace_bp.route('/seller', methods=['POST'])
 @jwt_required()
 def add_seller():

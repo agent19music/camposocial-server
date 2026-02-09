@@ -508,6 +508,69 @@ def delete_group(community_id):
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
+@communities_bp.route('/communities/<community_id>/transfer-ownership', methods=['PUT'])
+@jwt_required()
+def transfer_group_ownership(community_id):
+    """Transfer community ownership to another member"""
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        new_owner_id = data.get('new_owner_id')
+        
+        if not new_owner_id:
+            return jsonify({'error': 'New owner ID is required'}), 400
+        
+        community = Community.query.filter_by(id=community_id, is_active=True).first()
+        if not community:
+            return jsonify({'error': 'Community not found'}), 404
+            
+        # Verify current user is the owner (creator)
+        if community.created_by != user_id:
+             return jsonify({'error': 'Only the community owner can transfer ownership'}), 403
+             
+        # Verify new owner is a member
+        new_owner_member = CommunityMember.query.filter_by(
+            community_id=community_id,
+            user_id=new_owner_id,
+            is_active=True
+        ).first()
+        
+        if not new_owner_member:
+            return jsonify({'error': 'Selected user must be a member of the community'}), 400
+            
+        # Transfer ownership
+        community.created_by = new_owner_id
+        
+        # Ensure new owner is admin
+        new_owner_member.role = 'admin'
+        
+        # NOTE: The old owner remains an admin by default as they were the creator. 
+        # We don't need to change their role explicitly as 'admin' is appropriate.
+        
+        # Create notification for new owner
+        notification = EnhancedNotification(
+            type='GROUP_OWNERSHIP_TRANSFERRED',
+            priority='high',
+            recipient_id=new_owner_id,
+            sender_id=user_id,
+            community_id=community_id,
+            title='You are now the Owner!',
+            message=f'Ownership of {community.name} has been transferred to you.',
+            action_url=f'/communities/{community.slug}'
+        )
+        db.session.add(notification)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Community ownership transferred successfully',
+            'new_owner_id': new_owner_id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 # ============= Community Membership Management =============
 
 @communities_bp.route('/communities/<community_id>/join', methods=['POST'])
@@ -665,8 +728,8 @@ def get_group_members(community_id):
         # Order by role importance and join date
         query = query.order_by(
             db.case(
-                [(CommunityMember.role == 'admin', 0),
-                 (CommunityMember.role == 'moderator', 1)],
+                (CommunityMember.role == 'admin', 0),
+                (CommunityMember.role == 'moderator', 1),
                 else_=2
             ),
             CommunityMember.joined_at.desc()
@@ -872,7 +935,7 @@ def create_group_post(community_slug):
             
             # Link hashtag to community post
             group_post_hashtag = CommunityPostHashtag(
-                group_post_id=group_post.id,
+                community_post_id=community_post.id,
                 community_hashtag_id=community_hashtag.id
             )
             db.session.add(group_post_hashtag)
@@ -885,7 +948,7 @@ def create_group_post(community_slug):
         return jsonify({
             'message': 'Post created successfully',
             'post': {
-                'id': group_post.id,
+                'id': community_post.id,
                 'yap_id': yap.id,
                 'content': yap.content,
                 'community_id': community.id,

@@ -3,16 +3,140 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, Badge, UserBadge, BadgeTransaction, Users
 from badge_payment_service import get_badge_payment_service, get_current_provider_name
 from datetime import datetime
+from sqlalchemy import func
 import uuid
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 badges_bp = Blueprint('badges', __name__, url_prefix='/api/badges')
+
+
+# ============================================================================
+# Badge Auto-Award Helper Functions
+# ============================================================================
+
+def auto_award_university_badge(user_id: int, university_name: str, commit: bool = False) -> dict:
+    """
+    Auto-award a university badge to a user.
+    
+    Args:
+        user_id: The user's ID
+        university_name: The university name to match a badge
+        commit: Whether to commit the transaction (set False if caller will commit)
+    
+    Returns:
+        dict with 'success', 'badge_id', 'badge_name', 'message', 'already_owned'
+    """
+    result = {
+        'success': False,
+        'badge_id': None,
+        'badge_name': None,
+        'message': '',
+        'already_owned': False
+    }
+    
+    if not university_name or not university_name.strip():
+        result['message'] = 'No university name provided'
+        logger.warning(f"Badge auto-award failed for user {user_id}: No university name")
+        return result
+    
+    try:
+        # Badge naming convention: "{University Name} Member"
+        badge_name = f"{university_name.strip()} Member"
+        logger.info(f"Auto-award badge check: user_id={user_id}, looking for badge='{badge_name}'")
+        
+        # Case-insensitive lookup for the badge
+        badge = Badge.query.filter(
+            func.lower(Badge.name) == badge_name.lower(),
+            Badge.is_active == True
+        ).first()
+        
+        if not badge:
+            # Try alternative lookup by badge_type and partial name match
+            badge = Badge.query.filter(
+                Badge.badge_type == 'uni',
+                func.lower(Badge.name).contains(func.lower(university_name.strip())),
+                Badge.is_active == True
+            ).first()
+        
+        if not badge:
+            result['message'] = f"No badge found for university: {university_name}"
+            logger.warning(f"Badge not found for user {user_id}: '{badge_name}'")
+            return result
+        
+        logger.info(f"Found badge: id={badge.id}, name={badge.name}, type={badge.badge_type}")
+        
+        # Check if user already has this badge
+        existing_badge = UserBadge.query.filter_by(
+            user_id=user_id,
+            badge_id=badge.id
+        ).first()
+        
+        if existing_badge:
+            result['success'] = True
+            result['already_owned'] = True
+            result['badge_id'] = badge.id
+            result['badge_name'] = badge.name
+            result['message'] = f"User already has badge: {badge.name}"
+            logger.info(f"User {user_id} already has badge {badge.id}")
+            return result
+        
+        # Award the badge
+        new_user_badge = UserBadge(
+            user_id=user_id,
+            badge_id=badge.id,
+            is_displayed=True,
+            display_order=0,  # New uni badges get priority display
+            source='auto_award'
+        )
+        db.session.add(new_user_badge)
+        
+        # Shift existing badges display order
+        existing_displayed = UserBadge.query.filter(
+            UserBadge.user_id == user_id,
+            UserBadge.badge_id != badge.id,
+            UserBadge.is_displayed == True
+        ).all()
+        
+        for i, existing in enumerate(existing_displayed):
+            existing.display_order = i + 1
+        
+        if commit:
+            db.session.commit()
+            logger.info(f"Badge {badge.id} committed for user {user_id}")
+        else:
+            db.session.flush()  # Ensure the badge is added but don't commit yet
+            logger.info(f"Badge {badge.id} flushed for user {user_id} (commit pending)")
+        
+        result['success'] = True
+        result['badge_id'] = badge.id
+        result['badge_name'] = badge.name
+        result['message'] = f"Badge awarded: {badge.name}"
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error auto-awarding badge to user {user_id}: {str(e)}", exc_info=True)
+        result['message'] = f"Error awarding badge: {str(e)}"
+        return result
+
 
 @badges_bp.route('/', methods=['GET'])
 @jwt_required()
 def get_available_badges():
-    """Get all available badges for purchase"""
+    """Get all available badges for purchase, filterable by type"""
     try:
-        badges = Badge.query.filter_by(is_active=True).all()
+        badge_type = request.args.get('type')  # 'uni', 'free', 'commercial', or None for all
+        
+        query = Badge.query.filter_by(is_active=True)
+        
+        if badge_type:
+            query = query.filter_by(badge_type=badge_type)
+        
+        badges = query.all()
+        
         return jsonify({
             'success': True,
             'badges': [{
@@ -21,10 +145,54 @@ def get_available_badges():
                 'description': badge.description,
                 'image_url': badge.image_url,
                 'price_ksh': badge.price_ksh,
+                'badge_type': badge.badge_type,
                 'is_animated': badge.is_animated
             } for badge in badges]
         }), 200
     except Exception as e:
+        logger.error(f"Error fetching badges: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@badges_bp.route('/by-type', methods=['GET'])
+@jwt_required()
+def get_badges_by_type():
+    """Get all badges grouped by type for easy client-side filtering"""
+    try:
+        badges = Badge.query.filter_by(is_active=True).all()
+        
+        grouped = {
+            'uni': [],
+            'free': [],
+            'commercial': []
+        }
+        
+        for badge in badges:
+            badge_data = {
+                'id': badge.id,
+                'name': badge.name,
+                'description': badge.description,
+                'image_url': badge.image_url,
+                'price_ksh': badge.price_ksh,
+                'badge_type': badge.badge_type,
+                'is_animated': badge.is_animated
+            }
+            if badge.badge_type in grouped:
+                grouped[badge.badge_type].append(badge_data)
+            else:
+                grouped['commercial'].append(badge_data)  # Default fallback
+        
+        return jsonify({
+            'success': True,
+            'badges_by_type': grouped,
+            'counts': {
+                'uni': len(grouped['uni']),
+                'free': len(grouped['free']),
+                'commercial': len(grouped['commercial'])
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f"Error fetching badges by type: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @badges_bp.route('/user/<int:user_id>', methods=['GET'])
@@ -45,10 +213,12 @@ def get_user_badges(user_id):
                 'name': badge.name,
                 'description': badge.description,
                 'image_url': badge.image_url,
+                'badge_type': badge.badge_type,
                 'is_animated': badge.is_animated,
                 'is_displayed': user_badge.is_displayed,
                 'display_order': user_badge.display_order,
-                'purchased_at': user_badge.purchased_at.isoformat()
+                'purchased_at': user_badge.purchased_at.isoformat(),
+                'source': user_badge.source
             }
             badges_data.append(badge_info)
             
@@ -57,6 +227,8 @@ def get_user_badges(user_id):
         
         # Limit displayed badges to 3
         displayed_badges = displayed_badges[:3]
+        
+        logger.info(f"Fetched {len(badges_data)} badges for user {user_id}, {len(displayed_badges)} displayed")
         
         return jsonify({
             'success': True,
@@ -685,5 +857,105 @@ def admin_grant_badge():
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Admin grant badge error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@badges_bp.route('/debug/auto-award-test', methods=['POST'])
+@jwt_required()
+def debug_auto_award_test():
+    """
+    Debug endpoint to test university badge auto-awarding.
+    Pass a university name and it will attempt to award the badge.
+    """
+    try:
+        current_user_id = get_jwt_identity()
+        data = request.get_json()
+        university_name = data.get('university')
+        
+        if not university_name:
+            # List all available university badges for reference
+            uni_badges = Badge.query.filter_by(badge_type='uni', is_active=True).all()
+            return jsonify({
+                'success': False,
+                'error': 'University name required',
+                'available_universities': [b.name.replace(' Member', '') for b in uni_badges],
+                'total_uni_badges': len(uni_badges)
+            }), 400
+        
+        # Test the auto-award logic
+        result = auto_award_university_badge(
+            user_id=current_user_id,
+            university_name=university_name,
+            commit=True
+        )
+        
+        return jsonify({
+            'success': result['success'],
+            'badge_id': result['badge_id'],
+            'badge_name': result['badge_name'],
+            'message': result['message'],
+            'already_owned': result['already_owned']
+        }), 200 if result['success'] else 400
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Debug auto-award test error: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@badges_bp.route('/debug/badge-lookup', methods=['GET'])
+@jwt_required()
+def debug_badge_lookup():
+    """
+    Debug endpoint to check badge lookup for a university.
+    """
+    try:
+        university = request.args.get('university', '')
+        
+        badge_name = f"{university.strip()} Member" if university else None
+        
+        # Direct lookup
+        direct_match = None
+        if badge_name:
+            badge = Badge.query.filter(
+                func.lower(Badge.name) == badge_name.lower()
+            ).first()
+            if badge:
+                direct_match = {
+                    'id': badge.id,
+                    'name': badge.name,
+                    'badge_type': badge.badge_type,
+                    'is_active': badge.is_active
+                }
+        
+        # Partial match
+        partial_matches = []
+        if university:
+            badges = Badge.query.filter(
+                Badge.badge_type == 'uni',
+                func.lower(Badge.name).contains(func.lower(university.strip()))
+            ).all()
+            partial_matches = [{
+                'id': b.id,
+                'name': b.name,
+                'badge_type': b.badge_type
+            } for b in badges]
+        
+        # All uni badges
+        all_uni = Badge.query.filter_by(badge_type='uni').all()
+        
+        return jsonify({
+            'search_query': {
+                'university': university,
+                'expected_badge_name': badge_name
+            },
+            'direct_match': direct_match,
+            'partial_matches': partial_matches,
+            'total_uni_badges': len(all_uni),
+            'all_uni_badge_names': [b.name for b in all_uni]
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Debug badge lookup error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 

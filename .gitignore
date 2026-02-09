@@ -66,3 +66,6 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Featured accounts credentials (contains passwords - NEVER commit)
+featured_accounts_credentials.json

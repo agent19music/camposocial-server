@@ -39,7 +39,7 @@ services:
       - R2_ENDPOINT_URL=${R2_ENDPOINT_URL}
       - R2_BUCKET_NAME=${R2_BUCKET_NAME}
       - IMAGE_PREFIX=${IMAGE_PREFIX}
-      - SEED_BADGES=${SEED_BADGES:-false}
+      - SEED_BADGES=${SEED_BADGES:-true}
       - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
     volumes:
