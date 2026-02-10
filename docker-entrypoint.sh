@@ -76,6 +76,11 @@ fi
 # ============================================================================
 # Start the application server
 # ============================================================================
+# Run migrations automatically (Smooth no manual mode)
+log "Running automatic database migrations..."
+flask db upgrade || log "WARNING: Automatic migration failed, proceeding anyway..."
+
+
 log "Starting Gunicorn with eventlet worker..."
 log "Server will be available on port 5000"
 
