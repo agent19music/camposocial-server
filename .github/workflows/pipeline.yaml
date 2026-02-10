@@ -92,7 +92,10 @@ jobs:
       - name: Deploy to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service camposocial-server --detach
+        run: |
+          railway up --service camposocial-server --detach
+          railway run --service camposocial-server flask db upgrade
+
 
   # ------------------------------------------------------------------
   # JOB 3: PRODUCTION BUILD & DEPLOY (DigitalOcean)
