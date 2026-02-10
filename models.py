@@ -866,7 +866,7 @@ class Follow(db.Model):
     @staticmethod
     def get_active_users(exclude_ids=None, days=7, limit=10):
         """Get users who have been active recently"""
-        from sqlalchemy import func
+        from sqlalchemy import func, or_
         from datetime import datetime, timedelta
         
         cutoff_date = datetime.utcnow() - timedelta(days=days)

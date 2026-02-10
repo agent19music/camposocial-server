@@ -935,7 +935,7 @@ def create_group_post(community_slug):
             
             # Link hashtag to community post
             group_post_hashtag = CommunityPostHashtag(
-                community_post_id=community_post.id,
+                community_post_id=group_post.id,
                 community_hashtag_id=community_hashtag.id
             )
             db.session.add(group_post_hashtag)
@@ -948,7 +948,7 @@ def create_group_post(community_slug):
         return jsonify({
             'message': 'Post created successfully',
             'post': {
-                'id': community_post.id,
+                'id': group_post.id,
                 'yap_id': yap.id,
                 'content': yap.content,
                 'community_id': community.id,

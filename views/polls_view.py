@@ -96,7 +96,7 @@ def create_poll():
         group_id = data.get('group_id')
         if group_id:
             # Verify user can create polls in this group
-            if not can_create_poll_in_group(group_id, user_id):
+            if not can_create_poll_in_community(group_id, user_id):
                 return jsonify({'error': 'You do not have permission to create polls in this group'}), 403
         
         # Create poll
@@ -594,7 +594,7 @@ def get_trending_polls():
             ),
             or_(
                 Poll.group_id == None,
-                Poll.group_id.in_(user_group_ids) if user_group_ids else False
+                Poll.group_id.in_(user_community_ids) if user_community_ids else False
             )
         ).group_by(Poll.id).order_by(
             func.count(PollVote.id).desc()

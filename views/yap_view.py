@@ -2404,7 +2404,7 @@ def get_public_user_profile(username):
             'course': user.course,
             'followers_count': follower_count,
             'following_count': following_count,
-            'yaps_count': len(user_yaps),
+            'yaps_count': Yap.query.filter_by(user_id=user.id, is_deleted=False).count(),
             'join_date': user.created_at.isoformat() if user.created_at else None,
             'badges': badges_data,
             'is_private': False,
