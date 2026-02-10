@@ -8,10 +8,10 @@ from cuid import cuid
 polls_bp = Blueprint('polls', __name__)
 
 # ============= Helper Functions =============
-def can_create_poll_in_group(group_id, user_id):
-    """Check if user can create polls in a group"""
+def can_create_poll_in_community(community_id, user_id):
+    """Check if user can create polls in a community"""
     member = CommunityMember.query.filter_by(
-        group_id=group_id,
+        community_id=community_id,
         user_id=user_id,
         is_active=True
     ).first()
@@ -23,21 +23,21 @@ def can_create_poll_in_group(group_id, user_id):
 def can_view_poll(poll, user_id):
     """Check if user can view a poll"""
     # Campus-wide polls are visible to all
-    if not poll.group_id:
+    if not poll.community_id:
         return True
     
     # Community polls - check membership
-    group = Community.query.get(poll.group_id)
-    if not group or not group.is_active:
+    community = Community.query.get(poll.community_id)
+    if not community or not community.is_active:
         return False
     
     # Public group polls can be viewed by all
-    if group.privacy_type == 'public':
+    if community.privacy_type == 'public':
         return True
     
     # Private/secret group polls - check membership
     member = CommunityMember.query.filter_by(
-        group_id=poll.group_id,
+        community_id=poll.community_id,
         user_id=user_id,
         is_active=True
     ).first()
@@ -570,11 +570,11 @@ def get_trending_polls():
         user_id = get_jwt_identity()
         
         # Get user's groups
-        user_groups = CommunityMember.query.filter_by(
+        user_communities = CommunityMember.query.filter_by(
             user_id=user_id,
             is_active=True
         ).all()
-        user_group_ids = [gm.group_id for gm in user_groups]
+        user_community_ids = [gm.community_id for gm in user_communities]
         
         # Query for trending polls
         trending = db.session.query(

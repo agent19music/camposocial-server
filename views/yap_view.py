@@ -39,6 +39,68 @@ r2_client = boto3.client(
     aws_secret_access_key=R2_SECRET_ACCESS_KEY
 )
 
+
+def get_weighted_likes_count(yap_id):
+    """Calculate the weighted like count for a yap based on each liker's engagement_multiplier.
+    Regular users contribute 1.0 per like; featured accounts contribute their custom multiplier.
+    """
+    result = db.session.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (Users.engagement_multiplier.isnot(None), Users.engagement_multiplier),
+                    else_=1.0
+                )
+            ),
+            0
+        )
+    ).select_from(Like).join(
+        Users, Users.id == Like.user_id
+    ).filter(
+        Like.yap_id == yap_id
+    ).scalar()
+    return float(result)
+
+
+def get_weighted_retweets_count(yap_id):
+    """Calculate the weighted retweet count for a yap based on each retweeter's engagement_multiplier."""
+    result = db.session.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (Users.engagement_multiplier.isnot(None), Users.engagement_multiplier),
+                    else_=1.0
+                )
+            ),
+            0
+        )
+    ).select_from(Yap).join(
+        Users, Users.id == Yap.user_id
+    ).filter(
+        Yap.original_yap_id == yap_id
+    ).scalar()
+    return float(result)
+
+
+def get_weighted_replies_count(yap_id):
+    """Calculate the weighted reply count for a yap based on each replier's engagement_multiplier."""
+    result = db.session.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (Users.engagement_multiplier.isnot(None), Users.engagement_multiplier),
+                    else_=1.0
+                )
+            ),
+            0
+        )
+    ).select_from(Reply).join(
+        Users, Users.id == Reply.user_id
+    ).filter(
+        Reply.yap_id == yap_id
+    ).scalar()
+    return float(result)
+
 def upload_media_to_r2(file_content, file_name, content_type):
     try:
         # Upload the file to R2
@@ -283,6 +345,9 @@ def fetch_yaps():
                         'original_yap_id': original_yap.original_yap_id,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
@@ -305,6 +370,9 @@ def fetch_yaps():
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
@@ -430,6 +498,7 @@ def get_specific_yap(yap_id):
             } for reply in yap.replies if not reply.parent_reply_id],  # Only top-level replies
             'replies_count': len(yap.replies),
             'likes_count': len(yap.likes),
+            'weighted_likes_count': get_weighted_likes_count(yap.id),
             'retweets_count': len(yap.retweets),
             'badges': badges_data,
             'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
@@ -488,6 +557,9 @@ def get_user_yaps(user_id):
                         'original_yap_id': original_yap.original_yap_id,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
@@ -510,6 +582,9 @@ def get_user_yaps(user_id):
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
                 'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
@@ -550,7 +625,8 @@ def toggle_like_yap(yap_id):
             return jsonify({
                 'message': 'Yap unliked successfully',
                 'liked': False,
-                'likes_count': len(yap.likes)
+                'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap_id)
             }), 200
         else:
             # Like the yap
@@ -578,7 +654,8 @@ def toggle_like_yap(yap_id):
             return jsonify({
                 'message': 'Yap liked successfully',
                 'liked': True,
-                'likes_count': len(yap.likes)
+                'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap_id)
             }), 200
             
     except Exception as e:
@@ -831,19 +908,45 @@ def get_trending_yaps():
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 20, type=int)
         
-        # Calculate trending score based on engagement in last 24 hours
+        # Calculate trending score based on weighted engagement in last 24 hours
         twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
         
-        # Complex trending algorithm
+        # Create aliases for engagement multiplier joins
+        LikeUser = db.aliased(Users)
+        ReplyUser = db.aliased(Users)
+        
+        # Weighted trending algorithm — featured accounts' likes/replies count more
         trending_yaps = db.session.query(
             Yap,
             (
-                # Like weight: 1 point each
-                func.count(Like.id).filter(Like.created_at >= twenty_four_hours_ago) * 1 +
-                # Reply weight: 3 points each (higher engagement)
-                func.count(Reply.id).filter(Reply.created_at >= twenty_four_hours_ago) * 3 +
-                # Retweet weight: 2 points each
-                func.count(Yap.id).filter(Yap.original_yap_id == Yap.id, Yap.created_at >= twenty_four_hours_ago) * 2 +
+                # Weighted like score: sum of each liker's engagement_multiplier
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Like.created_at >= twenty_four_hours_ago,
+                             case(
+                                 (LikeUser.engagement_multiplier.isnot(None), LikeUser.engagement_multiplier),
+                                 else_=1.0
+                             )),
+                            else_=0
+                        )
+                    ),
+                    0
+                ) +
+                # Weighted reply score: sum of each replier's engagement_multiplier * 3
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Reply.created_at >= twenty_four_hours_ago,
+                             case(
+                                 (ReplyUser.engagement_multiplier.isnot(None), ReplyUser.engagement_multiplier * 3),
+                                 else_=3.0
+                             )),
+                            else_=0
+                        )
+                    ),
+                    0
+                ) +
                 # Recency bonus: newer yaps get slight boost
                 case(
                     (Yap.created_at >= twenty_four_hours_ago, 5),
@@ -852,11 +955,14 @@ def get_trending_yaps():
                 )
             ).label('trending_score')
         ).outerjoin(Like, Like.yap_id == Yap.id
+        ).outerjoin(LikeUser, LikeUser.id == Like.user_id
         ).outerjoin(Reply, Reply.yap_id == Yap.id
+        ).outerjoin(ReplyUser, ReplyUser.id == Reply.user_id
         ).filter(
-            Yap.created_at >= datetime.utcnow() - timedelta(days=7)  # Only yaps from last week
+            Yap.created_at >= datetime.utcnow() - timedelta(days=7),  # Only yaps from last week
+            or_(Yap.is_deleted == False, Yap.is_deleted.is_(None))
         ).group_by(Yap.id
-        ).order_by(func.count(Like.id).desc(), Yap.created_at.desc()
+        ).order_by(desc('trending_score'), Yap.created_at.desc()
         ).paginate(page=page, per_page=per_page, error_out=False)
         
         # Serialize trending yaps
@@ -910,6 +1016,9 @@ def get_trending_yaps():
                         'original_yap_id': original_yap.original_yap_id,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
@@ -932,6 +1041,9 @@ def get_trending_yaps():
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'trending_score': float(trending_score) if trending_score else 0,
                 'badges': badges_data,
@@ -1330,6 +1442,9 @@ def get_user_profile(username):
                         'original_yap_id': original_yap.original_yap_id,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
@@ -1352,6 +1467,9 @@ def get_user_profile(username):
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
@@ -1601,6 +1719,9 @@ def get_personalized_feed():
                         'original_yap_id': original_yap.original_yap_id,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
@@ -1626,7 +1747,10 @@ def get_personalized_feed():
                 'avatar': yap.user.avatar,
                 'original_yap_id': yap.original_yap_id,
                 'replies_count': len(yap.replies),
-                'likes_count': len(yap.retweets),
+                'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
@@ -2021,6 +2145,9 @@ def get_top_yaps():
                         'avatar': original_yap.user.avatar,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
@@ -2041,6 +2168,9 @@ def get_top_yaps():
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
@@ -2227,6 +2357,9 @@ def get_public_user_profile(username):
                         'avatar': original_yap.user.avatar,
                         'replies_count': len(original_yap.replies),
                         'likes_count': len(original_yap.likes),
+                        'weighted_likes_count': get_weighted_likes_count(original_yap.id),
+                        'weighted_replies_count': get_weighted_replies_count(original_yap.id),
+                        'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
@@ -2247,6 +2380,9 @@ def get_public_user_profile(username):
                 'is_quote': bool(yap.original_yap_id and yap.content.strip()),
                 'replies_count': len(yap.replies),
                 'likes_count': len(yap.likes),
+                'weighted_likes_count': get_weighted_likes_count(yap.id),
+                'weighted_replies_count': get_weighted_replies_count(yap.id),
+                'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
                 'badges': badges_for_yap,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],

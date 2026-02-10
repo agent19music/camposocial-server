@@ -197,6 +197,10 @@ def create_app():
     app.register_blueprint(message_bp, url_prefix='/camposocial/api')
     app.register_blueprint(seller_bp, url_prefix='/camposocial/api')
     
+    # Register communities blueprint
+    from views.communities_view import communities_bp
+    app.register_blueprint(communities_bp, url_prefix='/camposocial/api')
+    
     # Register media handling blueprint
     from views.media_view import media_bp
     app.register_blueprint(media_bp, url_prefix='/camposocial/api')
@@ -295,4 +299,4 @@ atexit.register(lambda: scheduler.shutdown())
 
 if __name__ == '__main__':
     # Run the app
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

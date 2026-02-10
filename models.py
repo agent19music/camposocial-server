@@ -34,6 +34,10 @@ class Users(db.Model, SerializerMixin):
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     public_key = db.Column(db.Text, nullable=True)
     yap_header_img = db.Column(db.String(255), nullable=True)
+    university = db.Column(db.String(255), nullable=True)
+    faculty = db.Column(db.String(255), nullable=True)
+    course = db.Column(db.String(255), nullable=True)
+    engagement_multiplier = db.Column(db.Float, nullable=False, default=1.0, index=True)
 
     # OAuth-specific fields
     oauth_provider = db.Column(db.String(50), nullable=True)  # 'google', 'github', 'twitter'
@@ -1144,11 +1148,9 @@ class TokenBlocklist(db.Model):
     jti =  db.Column(db.String(100),nullable=True)
     created_at = db.Column(db.DateTime(), default=datetime.utcnow)
 
-# ==================== PHASE 8 MODELS ====================
 
-# Groups/Communities
-class Group(db.Model, SerializerMixin):
-    __tablename__ = 'groups'
+class Community(db.Model, SerializerMixin):
+    __tablename__ = 'communities'
     
     id = db.Column(db.String, primary_key=True, default=cuid)
     name = db.Column(db.String(255), nullable=False)
@@ -1166,19 +1168,19 @@ class Group(db.Model, SerializerMixin):
     is_active = db.Column(db.Boolean, default=True)
     
     # Relationships
-    creator = db.relationship('Users', backref='created_groups')
-    members = db.relationship('GroupMember', backref='group', lazy=True, cascade='all, delete-orphan')
-    posts = db.relationship('GroupPost', backref='group', lazy=True, cascade='all, delete-orphan')
-    polls = db.relationship('Poll', backref='group', lazy=True)
+    creator = db.relationship('Users', backref='created_communities')
+    members = db.relationship('CommunityMember', backref='community', lazy=True, cascade='all, delete-orphan')
+    posts = db.relationship('CommunityPost', backref='community', lazy=True, cascade='all, delete-orphan')
+    polls = db.relationship('Poll', backref='community', lazy=True)
     
     def __repr__(self):
-        return f"<Group {self.name}>"    
+        return f"<Community {self.name}>"    
 
-class GroupMember(db.Model, SerializerMixin):
-    __tablename__ = 'group_members'
+class CommunityMember(db.Model, SerializerMixin):
+    __tablename__ = 'community_members'
     
     id = db.Column(db.Integer, primary_key=True)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     role = db.Column(db.String(20), default='member')  # 'admin', 'moderator', 'member'
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1188,26 +1190,70 @@ class GroupMember(db.Model, SerializerMixin):
     user = db.relationship('Users', backref='group_memberships')
     
     __table_args__ = (
-        db.UniqueConstraint('group_id', 'user_id', name='unique_group_member'),
+        db.UniqueConstraint('community_id', 'user_id', name='unique_community_member'),
     )
     
     def __repr__(self):
-        return f"<GroupMember {self.user_id} in {self.group_id}>"        
+        return f"<CommunityMember {self.user_id} in {self.community_id}>"        
 
-class GroupPost(db.Model, SerializerMixin):
-    __tablename__ = 'group_posts'
+class CommunityPost(db.Model, SerializerMixin):
+    __tablename__ = 'community_posts'
     
     id = db.Column(db.String, primary_key=True, default=cuid)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
     yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=False)
     is_pinned = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
-    yap = db.relationship('Yap', backref='group_posts')
+    yap = db.relationship('Yap', backref='community_posts')
     
     def __repr__(self):
-        return f"<GroupPost {self.yap_id} in {self.group_id}>"
+        return f"<CommunityPost {self.yap_id} in {self.community_id}>"
+
+class CommunityHashtag(db.Model, SerializerMixin):
+    __tablename__ = 'community_hashtags'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
+    usage_count = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    community = db.relationship('Community', backref='hashtags')
+    
+    def __repr__(self):
+        return f"<CommunityHashtag {self.name} in {self.community_id}>"
+
+class CommunityPostHashtag(db.Model, SerializerMixin):
+    __tablename__ = 'community_post_hashtags'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    community_post_id = db.Column(db.String, db.ForeignKey('community_posts.id'), nullable=False)
+    community_hashtag_id = db.Column(db.Integer, db.ForeignKey('community_hashtags.id'), nullable=False)
+    
+    # Relationships
+    post = db.relationship('CommunityPost', backref='post_hashtags')
+    hashtag = db.relationship('CommunityHashtag', backref='post_occurrences')
+
+class CommunityInvite(db.Model, SerializerMixin):
+    __tablename__ = 'community_invites'
+    
+    id = db.Column(db.String, primary_key=True, default=cuid)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    token = db.Column(db.String(100), unique=True, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=True)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    community = db.relationship('Community', backref='invites')
+    creator = db.relationship('Users', backref='created_invites')
+    
+    def __repr__(self):
+        return f"<CommunityInvite {self.token}>"
 
 # Polls and Surveys
 class Poll(db.Model, SerializerMixin):
@@ -1217,7 +1263,7 @@ class Poll(db.Model, SerializerMixin):
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     creator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)  # NULL for campus-wide
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True)  # NULL for campus-wide
     poll_type = db.Column(db.String(20), default='single')  # 'single', 'multiple'
     category = db.Column(db.String(50))  # 'campus', 'event', 'course', 'general'
     is_anonymous = db.Column(db.Boolean, default=False)
