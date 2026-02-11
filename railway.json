@@ -15,6 +15,6 @@
     },
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
-    "startCommand": "FLASK_APP=app.py flask db upgrade && gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT wsgi:application"
+    "startCommand": "bash -c 'export FLASK_APP=app.py && flask db upgrade && gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT wsgi:application'"
   }
 }
