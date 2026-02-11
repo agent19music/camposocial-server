@@ -78,6 +78,10 @@ jobs:
   # JOB 2: STAGING DEPLOY (Railway)
   # Triggers only on 'staging' branch push
   # ------------------------------------------------------------------
+  # ------------------------------------------------------------------
+  # JOB 2: STAGING DEPLOY (Fly.io)
+  # Triggers only on 'staging' branch push
+  # ------------------------------------------------------------------
   deploy-staging:
     needs: integration-test
     if: github.ref == 'refs/heads/staging'
@@ -86,10 +90,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deploy to Railway
+      - name: Setup Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only --config fly.staging.toml
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: npx -y @railway/cli up --service camposocial-server --detach
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
 
   # ------------------------------------------------------------------
