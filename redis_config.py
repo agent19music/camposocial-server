@@ -19,7 +19,7 @@ def get_redis_client():
     """
     redis_url = os.getenv('REDIS_URL')
     
-    if redis_url:
+    if redis_url and redis_url.strip():
         # Use REDIS_URL directly (supports Upstash, managed Redis, etc.)
         return redis.from_url(
             redis_url,
