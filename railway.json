@@ -6,7 +6,9 @@
   "deploy": {
     "runtime": "V2",
     "numReplicas": 1,
-    "sleepApplication": true,
+    "sleepApplication": false,
+    "healthcheckPath": "/camposocial/api/",
+    "healthcheckTimeout": 120,
     "useLegacyStacker": false,
     "multiRegionConfig": {
       "europe-west4-drams3a": {
