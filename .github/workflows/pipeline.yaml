@@ -100,12 +100,23 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker
-        run: gcloud auth configure-docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      - name: Ensure Artifact Registry Repo Exists
+        run: |
+          # Attempt to create the repository. Ignore error if it already exists.
+          gcloud artifacts repositories create camposocial-repo \
+            --repository-format=docker \
+            --location=us-central1 \
+            --description="Camposocial Docker Repository" || true
 
       - name: Build and Push Docker Image
         run: |
           PROJECT_ID=$(gcloud config get-value project)
-          IMAGE_URI="gcr.io/$PROJECT_ID/camposocial-server:staging"
+          # Use Artifact Registry
+          REPO_NAME="camposocial-repo"
+          IMAGE_URI="us-central1-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/camposocial-server:staging"
+          
           docker build -t $IMAGE_URI .
           docker push $IMAGE_URI
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
