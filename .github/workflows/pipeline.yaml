@@ -122,8 +122,10 @@ jobs:
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
       - name: Create Env File
+        env:
+          STAGING_ENV_FILE: ${{ secrets.STAGING_ENV_FILE }}
         run: |
-          echo "${{ secrets.STAGING_ENV_FILE }}" > .env.staging
+          echo "$STAGING_ENV_FILE" > .env.staging
 
       - name: Deploy to Cloud Run
         run: |
