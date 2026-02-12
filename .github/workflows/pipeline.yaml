@@ -142,9 +142,13 @@ jobs:
                       if '=' not in line: continue
                       k, v = line.split('=', 1)
                       v = v.strip()
-                      # Strip matching quotes if present
-                      if (v.startswith('\"') and v.endswith('\"')) or (v.startswith(\"'\") and v.endswith(\"'\")):
-                          v = v[1:-1]
+                      
+                      # Aggressively strip quotes
+                      # Handle \"value\", 'value', \"value', 'value\"
+                      if len(v) >= 2:
+                          if (v[0] == '\"' and v[-1] == '\"') or (v[0] == \"'\" and v[-1] == \"'\"):
+                              v = v[1:-1]
+                      
                       # Escape existing commas in value as gcloud uses comma as delimiter
                       v = v.replace(',', '\,')
                       props.append(f'{k}={v}')
