@@ -75,28 +75,85 @@ jobs:
           if [ -d "tests" ]; then pytest; else echo "No tests found, skipping"; fi
 
   # ------------------------------------------------------------------
-  # JOB 2: STAGING DEPLOY (Railway)
-  # Triggers only on 'staging' branch push
-  # ------------------------------------------------------------------
-  # ------------------------------------------------------------------
-  # JOB 2: STAGING DEPLOY (Fly.io)
+  # JOB 2: STAGING DEPLOY 
   # Triggers only on 'staging' branch push
   # ------------------------------------------------------------------
   deploy-staging:
     needs: integration-test
     if: github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GOOGLE_CLOUD_CREDENTIALS }}'
 
-      - name: Deploy to Fly.io
-        run: flyctl deploy --remote-only --config fly.staging.toml
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker
+
+      - name: Build and Push Docker Image
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+          IMAGE_URI="gcr.io/$PROJECT_ID/camposocial-server:staging"
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Create Env File
+        run: |
+          echo "${{ secrets.STAGING_ENV_FILE }}" > .env.staging
+
+      - name: Deploy to Cloud Run
+        run: |
+          # Parse .env.staging and format as comma-separated key=value pairs
+          # Robust python script to handle comments, empty lines, and clean quotes
+          ENV_VARS=$(python3 -c "
+          import sys
+          props = []
+          try:
+              with open('.env.staging') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line or line.startswith('#'): continue
+                      if '=' not in line: continue
+                      k, v = line.split('=', 1)
+                      v = v.strip()
+                      # Strip matching quotes if present
+                      if (v.startswith('\"') and v.endswith('\"')) or (v.startswith(\"'\") and v.endswith(\"'\")):
+                          v = v[1:-1]
+                      # Escape existing commas in value as gcloud uses comma as delimiter
+                      v = v.replace(',', '\,')
+                      props.append(f'{k}={v}')
+              print(','.join(props))
+          except FileNotFoundError:
+              print('')
+          ")
+
+          PROJECT_ID=$(gcloud config get-value project)
+          
+          if [ -z "$ENV_VARS" ]; then
+            echo "Error: No environment variables found or file missing."
+            exit 1
+          fi
+
+          gcloud run deploy camposocial-server-staging \
+            --image $IMAGE_URI \
+            --region us-central1 \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 5000 \
+            --set-env-vars "$ENV_VARS"
 
 
   # ------------------------------------------------------------------
