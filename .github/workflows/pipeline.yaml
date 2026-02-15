@@ -240,14 +240,18 @@ jobs:
             FULL_IMAGE=$(echo $REGISTRY/$IMAGE_NAME:$IMAGE_TAG | tr '[:upper:]' '[:lower:]')
             docker pull $FULL_IMAGE
             
-            # 4. Export env so Docker Compose uses the GHCR image (not Docker Hub)
-            export IMAGE_TAG REGISTRY IMAGE_NAME
+            # 4. Pin Compose to the image we just pulled (works even if server has old compose file)
+            echo "services:" > docker-compose.image.yml
+            echo "  migrate:" >> docker-compose.image.yml
+            echo "    image: $FULL_IMAGE" >> docker-compose.image.yml
+            echo "  app:" >> docker-compose.image.yml
+            echo "    image: $FULL_IMAGE" >> docker-compose.image.yml
             
             # 5. Run migrations (using your migrate service)
-            docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
+            docker compose -f docker-compose.prod.yml -f docker-compose.image.yml --env-file .env.prod run --rm migrate
             
             # 6. Restart the app service (Rolling update)
-            docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --no-deps app
+            docker compose -f docker-compose.prod.yml -f docker-compose.image.yml --env-file .env.prod up -d --no-deps app
             
             # 7. Verify Health
             echo "Waiting for health check..."
