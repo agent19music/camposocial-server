@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - staging  # Triggers Staging Deploy
-      - main     # Triggers Prod Deploy
+      - sean     # Triggers Prod Deploy
   pull_request:
     branches:
-      - main
+      - sean
       - staging
 
 env:
@@ -174,11 +174,11 @@ jobs:
 
   # ------------------------------------------------------------------
   # JOB 3: PRODUCTION BUILD & DEPLOY (DigitalOcean)
-  # Triggers only on 'main' branch push
+  # Triggers only on 'sean' branch push
   # ------------------------------------------------------------------
   build-and-push-prod:
     needs: integration-test
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/sean'
     runs-on: ubuntu-latest
     permissions:
       contents: read
