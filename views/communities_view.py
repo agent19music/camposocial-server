@@ -75,7 +75,16 @@ def create_group():
     """Create a new community"""
     try:
         user_id = get_jwt_identity()
-        data = request.get_json()
+        
+        # Determine if request is JSON or Multipart Form Data
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            data = request.form
+            cover_image_file = request.files.get('cover_image')
+            icon_image_file = request.files.get('icon_image')
+        else:
+            data = request.get_json() or {}
+            cover_image_file = None
+            icon_image_file = None
         
         # Validate required fields
         if not data.get('name'):
@@ -84,10 +93,39 @@ def create_group():
         # Generate slug from name
         slug = Community.generate_slug(data['name'])
         
-        # Use provided images or defaults (defaults are set in model)
-        cover_image = data.get('cover_image') or Community.DEFAULT_COVER_IMAGE
-        icon_image = data.get('icon_image') or Community.DEFAULT_ICON_IMAGE
+        # Handle cover image upload
+        cover_image_url = data.get('cover_image') or Community.DEFAULT_COVER_IMAGE
+        if cover_image_file:
+            filename = secure_filename(cover_image_file.filename)
+            s3_path = f"communities/{slug}/cover_{secrets.token_hex(4)}_{filename}"
+            try:
+                s3_client.upload_fileobj(
+                    cover_image_file,
+                    R2_BUCKET_NAME,
+                    s3_path,
+                    ExtraArgs={'ACL': 'public-read', 'ContentType': cover_image_file.content_type}
+                )
+                cover_image_url = f"{IMAGE_PREFIX}/{s3_path}"
+            except Exception as e:
+                print(f"Error uploading cover image: {str(e)}")
+                # Fallback to default if upload fails, or handle error
         
+        # Handle icon image upload
+        icon_image_url = data.get('icon_image') or Community.DEFAULT_ICON_IMAGE
+        if icon_image_file:
+            filename = secure_filename(icon_image_file.filename)
+            s3_path = f"communities/{slug}/icon_{secrets.token_hex(4)}_{filename}"
+            try:
+                s3_client.upload_fileobj(
+                    icon_image_file,
+                    R2_BUCKET_NAME,
+                    s3_path,
+                    ExtraArgs={'ACL': 'public-read', 'ContentType': icon_image_file.content_type}
+                )
+                icon_image_url = f"{IMAGE_PREFIX}/{s3_path}"
+            except Exception as e:
+                print(f"Error uploading icon image: {str(e)}")
+
         # Create new community
         new_group = Community(
             id=cuid(),
@@ -96,8 +134,8 @@ def create_group():
             description=data.get('description', ''),
             category=data.get('category', 'other'),
             privacy_type=data.get('privacy_type', 'public'),
-            cover_image=cover_image,
-            icon_image=icon_image,
+            cover_image=cover_image_url,
+            icon_image=icon_image_url,
             rules=data.get('rules'),
             created_by=user_id,
             university_restriction=data.get('university_restriction'), # Optional: restrict to specific uni

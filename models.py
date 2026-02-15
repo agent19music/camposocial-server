@@ -733,6 +733,9 @@ class Yap(db.Model):
     # Poll reference (optional)
     poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
     
+    # Community reference (optional - set when yap is posted in a community)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True)
+    
     # Relationships
     replies = db.relationship('Reply', backref='yap', lazy=True, cascade="all, delete-orphan")
     likes = db.relationship('Like', backref='yap', lazy=True, cascade="all, delete-orphan")
@@ -1152,7 +1155,12 @@ class TokenBlocklist(db.Model):
 class Community(db.Model, SerializerMixin):
     __tablename__ = 'communities'
     
+    # Default images for new communities
+    DEFAULT_COVER_IMAGE = 'https://pub-0a313ba028f9423cba4b9803d081b5db.r2.dev/app%20ui/camposocial-community-cover-image-deafult.png'
+    DEFAULT_ICON_IMAGE = 'https://pub-0a313ba028f9423cba4b9803d081b5db.r2.dev/app%20ui/camposocial%20community%20pfp%20default.png'
+    
     id = db.Column(db.String, primary_key=True, default=cuid)
+    slug = db.Column(db.String(300), unique=True, nullable=True, index=True)
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     category = db.Column(db.String(100))  # 'study', 'hobby', 'professional', 'event_planning', 'other'
@@ -1160,6 +1168,7 @@ class Community(db.Model, SerializerMixin):
     cover_image = db.Column(db.String(255))
     icon_image = db.Column(db.String(255))
     rules = db.Column(db.Text)
+    university_restriction = db.Column(db.String(255), nullable=True)  # Restrict to specific university
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1172,6 +1181,26 @@ class Community(db.Model, SerializerMixin):
     members = db.relationship('CommunityMember', backref='community', lazy=True, cascade='all, delete-orphan')
     posts = db.relationship('CommunityPost', backref='community', lazy=True, cascade='all, delete-orphan')
     polls = db.relationship('Poll', backref='community', lazy=True)
+    
+    @staticmethod
+    def generate_slug(name: str) -> str:
+        """
+        Generate a unique, SEO-friendly slug from community name.
+        Format: slugified-name-{6-char-random-suffix}
+        Example: "CS Study Group" -> "cs-study-group-a3x9k2"
+        """
+        import re
+        import secrets
+        
+        slug_base = name.lower().strip()
+        slug_base = re.sub(r'[^\w\s-]', '', slug_base)
+        slug_base = re.sub(r'[\s_]+', '-', slug_base)
+        slug_base = re.sub(r'-+', '-', slug_base)
+        slug_base = slug_base.strip('-')
+        slug_base = slug_base[:80]
+        
+        suffix = secrets.token_urlsafe(4)[:6].lower()
+        return f"{slug_base}-{suffix}"
     
     def __repr__(self):
         return f"<Community {self.name}>"    
@@ -1456,7 +1485,7 @@ class EnhancedNotification(db.Model, SerializerMixin):
     sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     
     # Reference fields for different types
-    group_id = db.Column(db.String, db.ForeignKey('groups.id'), nullable=True)
+    community_id = db.Column(db.String, db.ForeignKey('communities.id'), nullable=True)
     poll_id = db.Column(db.String, db.ForeignKey('polls.id'), nullable=True)
     achievement_id = db.Column(db.Integer, db.ForeignKey('achievements.id'), nullable=True)
     yap_id = db.Column(db.String, db.ForeignKey('yaps.id'), nullable=True)
