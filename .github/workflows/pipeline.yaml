@@ -256,7 +256,7 @@ jobs:
             # 7. Verify Health
             echo "Waiting for health check..."
             sleep 15
-            if curl --fail http://localhost:5000/camposocial/api/; then
+            if curl --fail http://localhost:80/camposocial/api/; then
               echo "Health check passed!"
             else
               echo "Health check failed!"
