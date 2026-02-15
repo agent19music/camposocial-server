@@ -8,6 +8,10 @@
 .env.*.local
 .env.prod
 .env.production
+.env.staging
+
+#docs
+/docs
 
 # Virtual environments
 /venv
@@ -66,3 +70,6 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Featured accounts credentials (contains passwords - NEVER commit)
+featured_accounts_credentials.json

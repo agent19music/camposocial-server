@@ -1,0 +1,264 @@
+name: Camposocial CI/CD
+
+on:
+  push:
+    branches:
+      - staging  # Triggers Staging Deploy
+      - main     # Triggers Prod Deploy
+  pull_request:
+    branches:
+      - main
+      - staging
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ------------------------------------------------------------------
+  # JOB 1: CI & TESTS (Runs on all pushes)
+  # ------------------------------------------------------------------
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      # We spin up a temp Redis for testing since your app needs it
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest flake8
+
+      - name: Lint with Flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      # The "Migration Sanity Check" you asked for
+      # This initializes a fresh SQLite DB and tries to run upgrades
+      # If this fails, we know the migration script is broken
+      - name: Verify Database Migrations
+        env:
+          FLASK_APP: app.py
+          DATABASE_URL: sqlite:///test_migration.db
+          SECRET_KEY: testing_key
+        run: |
+          flask db upgrade
+          echo "Migrations applied successfully!"
+
+      - name: Run Tests
+        env:
+          FLASK_ENV: testing
+          DATABASE_URL: sqlite:///test.db
+        # If you don't have tests yet, this will just pass. 
+        # Add a 'tests/' folder and basic pytest later.
+        run: |
+          if [ -d "tests" ]; then pytest; else echo "No tests found, skipping"; fi
+
+  # ------------------------------------------------------------------
+  # JOB 2: STAGING DEPLOY 
+  # Triggers only on 'staging' branch push
+  # ------------------------------------------------------------------
+  deploy-staging:
+    needs: integration-test
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GOOGLE_CLOUD_CREDENTIALS }}'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker europe-west3-docker.pkg.dev
+
+      - name: Ensure Artifact Registry Repo Exists
+        run: |
+          # Attempt to create the repository. Ignore error if it already exists.
+          gcloud artifacts repositories create camposocial-repo \
+            --repository-format=docker \
+            --location=europe-west3 \
+            --description="Camposocial Docker Repository" || true
+
+      - name: Build and Push Docker Image
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+          # Use Artifact Registry
+          REPO_NAME="camposocial-repo"
+          IMAGE_URI="europe-west3-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/camposocial-server:staging"
+          
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Create Env File
+        env:
+          STAGING_ENV_FILE: ${{ secrets.STAGING_ENV_FILE }}
+        run: |
+          echo "$STAGING_ENV_FILE" > .env.staging
+
+      - name: Deploy to Cloud Run
+        run: |
+          # Parse .env.staging and format as comma-separated key=value pairs
+          # Robust python script to handle comments, empty lines, and clean quotes
+          ENV_VARS=$(python3 -c "
+          import sys
+          props = []
+          try:
+              with open('.env.staging') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line or line.startswith('#'): continue
+                      if '=' not in line: continue
+                      k, v = line.split('=', 1)
+                      v = v.strip()
+                      
+                      # Aggressively strip quotes
+                      # Handle \"value\", 'value', \"value', 'value\"
+                      if len(v) >= 2:
+                          if (v[0] == '\"' and v[-1] == '\"') or (v[0] == \"'\" and v[-1] == \"'\"):
+                              v = v[1:-1]
+                      
+                      # Escape existing commas in value as gcloud uses comma as delimiter
+                      v = v.replace(',', '\,')
+                      props.append(f'{k}={v}')
+              print(','.join(props))
+          except FileNotFoundError:
+              print('')
+          ")
+
+          PROJECT_ID=$(gcloud config get-value project)
+          
+          if [ -z "$ENV_VARS" ]; then
+            echo "Error: No environment variables found or file missing."
+            exit 1
+          fi
+
+          gcloud run deploy camposocial-server-staging \
+            --image $IMAGE_URI \
+            --region europe-west3 \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 5000 \
+            --set-env-vars "$ENV_VARS"
+
+
+  # ------------------------------------------------------------------
+  # JOB 3: PRODUCTION BUILD & DEPLOY (DigitalOcean)
+  # Triggers only on 'main' branch push
+  # ------------------------------------------------------------------
+  build-and-push-prod:
+    needs: integration-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy-prod-ssh:
+    needs: build-and-push-prod
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH Remote Commands
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository }}
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          passphrase: ${{ secrets.DO_PASSPHRASE }}
+          envs: IMAGE_TAG,REGISTRY,IMAGE_NAME
+          script: |
+            # 1. Login to GHCR so Docker can pull the image
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            # 2. Navigate to project folder
+            cd /opt/camposocial/app
+            
+            # 3. Pull the specific image we just built
+            # Note: We need to lowercase the image name because Docker is picky
+            FULL_IMAGE=$(echo $REGISTRY/$IMAGE_NAME:$IMAGE_TAG | tr '[:upper:]' '[:lower:]')
+            docker pull $FULL_IMAGE
+            
+            # 4. Export the tag so Docker Compose uses it
+            export IMAGE_TAG=$IMAGE_TAG
+            
+            # 5. Run migrations (using your migrate service)
+            docker compose -f docker-compose.prod.yml run --rm migrate
+            
+            # 6. Restart the app service (Rolling update)
+            docker compose -f docker-compose.prod.yml up -d --no-deps app
+            
+            # 7. Verify Health
+            echo "Waiting for health check..."
+            sleep 15
+            if curl --fail http://localhost:5000/camposocial/api/; then
+              echo "Health check passed!"
+            else
+              echo "Health check failed!"
+              exit 1
+            fi
+
+            # 8. Cleanup old images
+            docker image prune -f

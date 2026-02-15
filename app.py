@@ -17,6 +17,9 @@ from api_explorer import api_explorer_bp
 from welcome import welcome_bp
 from websocket_handlers import register_socket_handlers
 from redis_config import get_redis_url
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import atexit
 
 load_dotenv()
 
@@ -194,6 +197,10 @@ def create_app():
     app.register_blueprint(message_bp, url_prefix='/camposocial/api')
     app.register_blueprint(seller_bp, url_prefix='/camposocial/api')
     
+    # Register communities blueprint
+    from views.communities_view import communities_bp
+    app.register_blueprint(communities_bp, url_prefix='/camposocial/api')
+    
     # Register media handling blueprint
     from views.media_view import media_bp
     app.register_blueprint(media_bp, url_prefix='/camposocial/api')
@@ -204,11 +211,7 @@ def create_app():
     
     # Advanced messaging functionality is now merged into message_bp
     
-    # ========== PHASE 8 BLUEPRINTS ==========
-    # Register Groups management blueprint
-    from views.groups_view import groups_bp
-    app.register_blueprint(groups_bp, url_prefix='/camposocial/api')
-    
+
     # Register Polls and Surveys blueprint
     from views.polls_view import polls_bp
     app.register_blueprint(polls_bp, url_prefix='/camposocial/api')
@@ -265,6 +268,35 @@ def create_app():
 # Create app instance for Flask CLI
 app, socketio = create_app()
 
+# Initialize the scheduler for cleanup jobs
+scheduler = BackgroundScheduler()
+
+def cleanup_deleted_yaps_job():
+    """Scheduled job to permanently delete yaps that were soft-deleted 30+ days ago"""
+    with app.app_context():
+        try:
+            from models import Yap
+            deleted_count = Yap.cleanup_deleted_yaps(days=30)
+            if deleted_count > 0:
+                logging.info(f"[Scheduler] Permanently deleted {deleted_count} yaps that were soft-deleted 30+ days ago")
+        except Exception as e:
+            logging.error(f"[Scheduler] Error cleaning up deleted yaps: {str(e)}")
+
+# Schedule the cleanup job to run daily at 3:00 AM
+scheduler.add_job(
+    func=cleanup_deleted_yaps_job,
+    trigger=CronTrigger(hour=3, minute=0),
+    id='cleanup_deleted_yaps',
+    name='Permanently delete soft-deleted yaps after 30 days',
+    replace_existing=True
+)
+
+# Start the scheduler
+scheduler.start()
+
+# Shut down the scheduler when exiting the app
+atexit.register(lambda: scheduler.shutdown())
+
 if __name__ == '__main__':
     # Run the app
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

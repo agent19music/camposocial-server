@@ -463,3 +463,95 @@ def get_educational_events():
 @jwt_required(optional=True)
 def get_events_events():
     return get_events_by_category('Social')
+
+
+# ============ PUBLIC ENDPOINTS (No Authentication Required) ============
+
+@event_bp.route('/public/events/top', methods=['GET'])
+def get_public_top_events():
+    """
+    Public endpoint: Get top upcoming and popular events.
+    Returns limited fields suitable for public preview.
+    """
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        
+        # Get upcoming events (date >= today) sorted by date
+        from datetime import date
+        today = date.today()
+        
+        upcoming_events = Events.query.filter(
+            Events.date_of_event >= today
+        ).order_by(Events.date_of_event.asc()).limit(limit).all()
+        
+        # Serialize events (without user-specific data like likedByCurrentUser)
+        output = []
+        for event in upcoming_events:
+            # Count attendees (approximate - could be improved with actual RSVP model)
+            attendee_count = 0  # Placeholder - would need RSVP model
+            
+            output.append({
+                'eventId': event.id,
+                'title': event.title,
+                'description': event.description[:200] + '...' if event.description and len(event.description) > 200 else event.description,  # Truncate for preview
+                'poster': event.image_url if event.image_url else None,
+                'start_time': event.start_time.isoformat() if event.start_time else None,
+                'end_time': event.end_time.isoformat() if event.end_time else None,
+                'date': event.date_of_event.strftime('%d %b %Y') if event.date_of_event else None,
+                'date_of_event': event.date_of_event.strftime('%Y-%m-%d') if event.date_of_event else None,
+                'entry_fee': event.entry_fee,
+                'category': event.category,
+                'location': event.location,
+                'ticket_link': event.ticket_link,
+                'user_id': event.user_id,
+                'username': event.user.username if event.user else None,
+                'userimage': event.user.avatar if event.user else None,
+                'ticketGroups': [_serialize_ticket_group(group) for group in sorted(event.ticket_groups, key=lambda g: g.created_at)],
+                'attendee_count': attendee_count
+            })
+        
+        return jsonify({
+            'events': output,
+            'count': len(output)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@event_bp.route('/public/events/<string:event_id>', methods=['GET'])
+def get_public_event(event_id):
+    """
+    Public endpoint: Get single event detail for SSR/SEO.
+    Returns full event data without user-specific fields.
+    """
+    try:
+        event = Events.query.get(event_id)
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        # Serialize event without user-specific data
+        output = {
+            'eventId': event.id,
+            'title': event.title,
+            'description': event.description,
+            'poster': event.image_url if event.image_url else None,
+            'start_time': event.start_time.isoformat() if event.start_time else None,
+            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'date': event.date_of_event.strftime('%d %b %Y') if event.date_of_event else None,
+            'date_of_event': event.date_of_event.strftime('%Y-%m-%d') if event.date_of_event else None,
+            'entry_fee': event.entry_fee,
+            'category': event.category,
+            'location': event.location,
+            'ticket_link': event.ticket_link,
+            'user_id': event.user_id,
+            'username': event.user.username if event.user else None,
+            'userimage': event.user.avatar if event.user else None,
+            'ticketGroups': [_serialize_ticket_group(group) for group in sorted(event.ticket_groups, key=lambda g: g.created_at)],
+            'comments': []  # Don't return comments for public endpoint
+        }
+        
+        return jsonify(output), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

@@ -12,8 +12,8 @@ class BlockedUser(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     
     # Relationships
-    blocker = db.relationship('Users', foreign_keys=[blocker_id], backref='blocked_users')
-    blocked = db.relationship('Users', foreign_keys=[blocked_id], backref='blocked_by')
+    blocker = db.relationship('Users', foreign_keys=[blocker_id], backref=db.backref('blocked_users', cascade='all, delete-orphan'))
+    blocked = db.relationship('Users', foreign_keys=[blocked_id], backref=db.backref('blocked_by', cascade='all, delete-orphan'))
     
     # Ensure unique blocking relationships
     __table_args__ = (
@@ -36,7 +36,7 @@ class UserActivity(db.Model):
     status_message = db.Column(db.String(255), nullable=True)
     
     # Relationship
-    user = db.relationship('Users', backref=db.backref('activity', uselist=False))
+    user = db.relationship('Users', backref=db.backref('activity', uselist=False, cascade='all, delete-orphan'))
     
     def __repr__(self):
         return f"<UserActivity {self.user_id}: {self.current_status}>"

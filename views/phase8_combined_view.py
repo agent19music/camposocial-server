@@ -5,8 +5,8 @@ This file combines the trending system and enhanced notifications to complete Ph
 
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import (db, TrendingTopic, Yap, Events, Products, Group, Like, Reply,
-                   GroupMember, Poll, PollVote, Users, EnhancedNotification, 
+from models import (db, TrendingTopic, Yap, Events, Products, Community, Like, Reply,
+                   CommunityMember, Poll, PollVote, Users, EnhancedNotification, 
                    NotificationPreference, Hashtag, YapHashtag, Follow)
 from datetime import datetime, timedelta, time
 from sqlalchemy import func, and_, or_, desc, case
@@ -142,26 +142,26 @@ def update_trending_topics():
         
         # Update trending groups (by new members)
         trending_groups = db.session.query(
-            Group.id,
-            Group.name,
-            func.count(GroupMember.id).label('new_members')
+            Community.id,
+            Community.name,
+            func.count(CommunityMember.id).label('new_members')
         ).join(
-            GroupMember, GroupMember.group_id == Group.id
+            CommunityMember, CommunityMember.community_id == Community.id
         ).filter(
-            GroupMember.joined_at >= cutoff_time,
-            Group.is_active == True
-        ).group_by(Group.id).having(
-            func.count(GroupMember.id) > 3
+            CommunityMember.joined_at >= cutoff_time,
+            Community.is_active == True
+        ).group_by(Community.id).having(
+            func.count(CommunityMember.id) > 3
         ).order_by(
-            func.count(GroupMember.id).desc()
+            func.count(CommunityMember.id).desc()
         ).limit(10).all()
         
-        for group_id, group_name, new_members in trending_groups:
+        for community_id, group_name, new_members in trending_groups:
             score = calculate_trending_score(new_members * 5, 12)  # Weight group joins higher
             
             trending = TrendingTopic.query.filter_by(
                 topic_type='group',
-                topic_id=group_id
+                topic_id=community_id
             ).first()
             
             if trending:
@@ -172,7 +172,7 @@ def update_trending_topics():
             else:
                 trending = TrendingTopic(
                     topic_type='group',
-                    topic_id=group_id,
+                    topic_id=community_id,
                     topic_name=group_name,
                     score=score,
                     engagement_count=new_members
@@ -198,7 +198,7 @@ def get_personalized_recommendations(user_id, content_type='mixed'):
         Yap, YapHashtag.yap_id == Yap.id
     ).filter(Yap.user_id == user_id).distinct().limit(10).all()
     
-    user_groups = GroupMember.query.filter_by(
+    user_groups = CommunityMember.query.filter_by(
         user_id=user_id,
         is_active=True
     ).all()
@@ -229,12 +229,12 @@ def get_personalized_recommendations(user_id, content_type='mixed'):
         # Recommend groups based on current groups' categories
         if user_groups:
             categories = [gm.group.category for gm in user_groups if gm.group.category]
-            recommended_groups = Group.query.filter(
-                Group.category.in_(categories),
-                ~Group.id.in_([gm.group_id for gm in user_groups]),
-                Group.is_active == True,
-                Group.privacy_type == 'public'
-            ).order_by(Group.member_count.desc()).limit(5).all()
+            recommended_groups = Community.query.filter(
+                Community.category.in_(categories),
+                ~Community.id.in_([gm.community_id for gm in user_groups]),
+                Community.is_active == True,
+                Community.privacy_type == 'public'
+            ).order_by(Community.member_count.desc()).limit(5).all()
             
             for group in recommended_groups:
                 recommendations.append({
@@ -297,7 +297,7 @@ def get_all_trending():
                                      .order_by(TrendingTopic.score.desc())\
                                      .limit(50).all()
         
-        # Group by type
+        # Community by type
         by_type = defaultdict(list)
         for topic in trending:
             by_type[topic.topic_type].append({
@@ -358,7 +358,7 @@ def get_trending_by_type(topic_type):
                         } if user else None
                     }
             elif topic_type == 'group':
-                group = Group.query.get(topic.topic_id)
+                group = Community.query.get(topic.topic_id)
                 if group:
                     details = {
                         'member_count': group.member_count,
@@ -481,7 +481,7 @@ def create_smart_notification(recipient_id, notification_type, **kwargs):
         priority=priority,
         recipient_id=recipient_id,
         sender_id=kwargs.get('sender_id'),
-        group_id=kwargs.get('group_id'),
+        community_id=kwargs.get('community_id'),
         poll_id=kwargs.get('poll_id'),
         achievement_id=kwargs.get('achievement_id'),
         yap_id=kwargs.get('yap_id'),
