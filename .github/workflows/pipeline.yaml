@@ -89,7 +89,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
