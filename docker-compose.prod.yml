@@ -18,7 +18,7 @@ services:
   # Migration Service - Runs FIRST, exits after completion
   # ============================================================================
   migrate:
-    image: camposocial-server:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_NAME:-agent19music/camposocial-server}:${IMAGE_TAG:-latest}
     container_name: camposocial-migrate
     environment:
       - MIGRATE_ONLY=true
@@ -36,7 +36,7 @@ services:
   # Flask Application Service
   # ============================================================================
   app:
-    image: camposocial-server:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_NAME:-agent19music/camposocial-server}:${IMAGE_TAG:-latest}
     container_name: camposocial-server
     ports:
       - "80:5000"
