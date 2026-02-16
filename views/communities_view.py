@@ -1,15 +1,14 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models import db, Community, CommunityMember, CommunityPost, Yap, Users, EnhancedNotification, YapMedia, CommunityHashtag, CommunityPostHashtag, Like, CommunityInvite
-from datetime import datetime
-from sqlalchemy import or_, and_, func
+from models import db, Community, CommunityMember, CommunityPost, Yap, Users, EnhancedNotification, YapMedia, CommunityHashtag, CommunityPostHashtag, Like, CommunityInvite, Badge, UserBadge
+from datetime import datetime, timedelta
+from sqlalchemy import or_, and_, func, case
 from cuid import cuid
 from werkzeug.utils import secure_filename
 import boto3
 import os
 import re
 import secrets
-from datetime import timedelta
 
 
 communities_bp = Blueprint('communities', __name__)
@@ -281,17 +280,24 @@ def discover_groups():
             user_categories = []
         
         # Find recommended groups
-        recommended_query = Community.query.filter(
-            Community.is_active == True,
-            Community.privacy_type == 'public',
-            ~Community.id.in_(user_group_ids)  # Exclude groups user is already in
-        )
+        # Handle empty user_group_ids list to avoid SQL issues
+        if user_group_ids:
+            recommended_query = Community.query.filter(
+                Community.is_active == True,
+                Community.privacy_type == 'public',
+                ~Community.id.in_(user_group_ids)  # Exclude groups user is already in
+            )
+        else:
+            recommended_query = Community.query.filter(
+                Community.is_active == True,
+                Community.privacy_type == 'public'
+            )
         
         # Prioritize groups in same categories
         if user_categories:
             recommended_query = recommended_query.order_by(
-                db.case(
-                    [(Community.category.in_(user_categories), 0)],
+                case(
+                    (Community.category.in_(user_categories), 0),
                     else_=1
                 ),
                 Community.member_count.desc()
@@ -302,20 +308,26 @@ def discover_groups():
         recommended = recommended_query.limit(10).all()
         
         # Get trending groups (most new members in last week)
-        trending_groups = db.session.query(
+        # Use datetime instead of func.date for PostgreSQL compatibility
+        week_ago = datetime.utcnow() - timedelta(days=7)
+        
+        trending_query = db.session.query(
             Community,
             func.count(CommunityMember.id).label('new_members')
         ).join(
             CommunityMember,
-            and_(
-                CommunityMember.community_id == Community.id,
-                CommunityMember.joined_at >= func.date('now', '-7 days')
-            )
+            CommunityMember.community_id == Community.id
         ).filter(
             Community.is_active == True,
             Community.privacy_type == 'public',
-            ~Community.id.in_(user_group_ids)
-        ).group_by(Community.id).order_by(
+            CommunityMember.joined_at >= week_ago
+        )
+        
+        # Exclude groups user is already in
+        if user_group_ids:
+            trending_query = trending_query.filter(~Community.id.in_(user_group_ids))
+        
+        trending_groups = trending_query.group_by(Community.id).order_by(
             func.count(CommunityMember.id).desc()
         ).limit(5).all()
         
@@ -980,9 +992,17 @@ def create_group_post(community_slug):
         
         db.session.commit()
         
-        # Get user info for response
+        # Get user info and badges for response
         user = Users.query.get(user_id)
-        
+        user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+            UserBadge.user_id == user.id,
+            UserBadge.is_displayed == True
+        ).order_by(UserBadge.display_order).limit(3).all()
+        badges_data = [
+            {'id': b.id, 'name': b.name, 'image_url': b.image_url, 'is_animated': b.is_animated}
+            for _, b in user_badges
+        ]
+
         return jsonify({
             'message': 'Post created successfully',
             'post': {
@@ -995,7 +1015,8 @@ def create_group_post(community_slug):
                     'id': user.id,
                     'username': user.username,
                     'display_name': user.display_name,
-                    'avatar': user.avatar
+                    'avatar': user.avatar,
+                    'badges': badges_data
                 },
                 'media': [{'media_url': m['media_url'], 'media_type': m['media_type']} for m in uploaded_media],
                 'hashtags': hashtags,
@@ -1065,6 +1086,16 @@ def get_group_posts(community_slug):
                 # Don't fail the whole request, just default to False
                 liked_by_user = False
 
+            # Get user's displayed badges (same as yap_view)
+            user_badges = db.session.query(UserBadge, Badge).join(Badge).filter(
+                UserBadge.user_id == user.id,
+                UserBadge.is_displayed == True
+            ).order_by(UserBadge.display_order).limit(3).all()
+            badges_data = [
+                {'id': b.id, 'name': b.name, 'image_url': b.image_url, 'is_animated': b.is_animated}
+                for _, b in user_badges
+            ]
+
             posts.append({
                 'id': group_post.id,
                 'yap_id': yap.id,
@@ -1076,7 +1107,8 @@ def get_group_posts(community_slug):
                     'id': user.id,
                     'username': user.username,
                     'display_name': user.display_name,
-                    'avatar': user.avatar
+                    'avatar': user.avatar,
+                    'badges': badges_data
                 },
                 'media': media,
                 'likes_count': likes_count,
