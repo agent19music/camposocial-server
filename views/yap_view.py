@@ -2147,7 +2147,7 @@ def get_top_yaps():
             RetweetUser, RetweetUser.id == RetweetYap.user_id
         ).filter(
             RetweetYap.original_yap_id == YapAlias.id
-        ).correlate(YapAlias).scalar_subquery()/feed
+        ).correlate(YapAlias).scalar_subquery()
         
         # Calculate total weighted engagement
         weighted_engagement = (
