@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - staging  # Triggers Staging Deploy
-      - main     # Triggers Prod Deploy
+      - sean     # Triggers Prod Deploy
   pull_request:
     branches:
-      - main
+      - sean
       - staging
 
 env:
@@ -174,11 +174,11 @@ jobs:
 
   # ------------------------------------------------------------------
   # JOB 3: PRODUCTION BUILD & DEPLOY (DigitalOcean)
-  # Triggers only on 'main' branch push
+  # Triggers only on 'sean' branch push
   # ------------------------------------------------------------------
   build-and-push-prod:
     needs: integration-test
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/sean'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -240,19 +240,23 @@ jobs:
             FULL_IMAGE=$(echo $REGISTRY/$IMAGE_NAME:$IMAGE_TAG | tr '[:upper:]' '[:lower:]')
             docker pull $FULL_IMAGE
             
-            # 4. Export the tag so Docker Compose uses it
-            export IMAGE_TAG=$IMAGE_TAG
+            # 4. Pin Compose to the image we just pulled (works even if server has old compose file)
+            echo "services:" > docker-compose.image.yml
+            echo "  migrate:" >> docker-compose.image.yml
+            echo "    image: $FULL_IMAGE" >> docker-compose.image.yml
+            echo "  app:" >> docker-compose.image.yml
+            echo "    image: $FULL_IMAGE" >> docker-compose.image.yml
             
             # 5. Run migrations (using your migrate service)
-            docker compose -f docker-compose.prod.yml run --rm migrate
+            docker compose -f docker-compose.prod.yml -f docker-compose.image.yml --env-file .env.prod run --rm migrate
             
             # 6. Restart the app service (Rolling update)
-            docker compose -f docker-compose.prod.yml up -d --no-deps app
+            docker compose -f docker-compose.prod.yml -f docker-compose.image.yml --env-file .env.prod up -d --no-deps app
             
             # 7. Verify Health
             echo "Waiting for health check..."
             sleep 15
-            if curl --fail http://localhost:5000/camposocial/api/; then
+            if curl --fail http://localhost:80/camposocial/api/; then
               echo "Health check passed!"
             else
               echo "Health check failed!"

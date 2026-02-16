@@ -1,4 +1,4 @@
-from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge
+from models import db, YapMedia, Yap, Users, Like, Reply, Badge, UserBadge, Community
 from flask import request, jsonify, Blueprint, make_response
 from werkzeug.security import generate_password_hash
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -350,8 +350,15 @@ def fetch_yaps():
                         'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
+
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else []
+                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -376,7 +383,13 @@ def fetch_yaps():
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
 
         # Return JSON response with pagination info
@@ -451,7 +464,13 @@ def get_specific_yap(yap_id):
                     'retweets_count': len(original_yap.retweets),
                     'badges': original_badges_data,
                     'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                    'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else []
+                    'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else [],
+                    'community': {
+                        'id': original_yap.community_id,
+                        'name': Community.query.get(original_yap.community_id).name,
+                        'slug': Community.query.get(original_yap.community_id).slug,
+                        'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                    } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                 }
 
         # Serialize yap with its replies
@@ -501,8 +520,15 @@ def get_specific_yap(yap_id):
             'weighted_likes_count': get_weighted_likes_count(yap.id),
             'retweets_count': len(yap.retweets),
             'badges': badges_data,
+            'badges': badges_data,
             'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-            'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+            'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+            'community': {
+                'id': yap.community_id,
+                'name': Community.query.get(yap.community_id).name,
+                'slug': Community.query.get(yap.community_id).slug,
+                'privacy_type': Community.query.get(yap.community_id).privacy_type
+            } if yap.community_id and Community.query.get(yap.community_id) else None
         }
 
         return jsonify(yap_data), 200
@@ -562,8 +588,15 @@ def get_user_yaps(user_id):
                         'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
+                        'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else []
+                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -586,8 +619,15 @@ def get_user_yaps(user_id):
                 'weighted_replies_count': get_weighted_replies_count(yap.id),
                 'weighted_retweets_count': get_weighted_retweets_count(yap.id),
                 'retweets_count': len(yap.retweets),
+                'retweets_count': len(yap.retweets),
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
 
         return jsonify({
@@ -1022,7 +1062,13 @@ def get_trending_yaps():
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else []
+                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -1048,7 +1094,13 @@ def get_trending_yaps():
                 'trending_score': float(trending_score) if trending_score else 0,
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
         
         return jsonify({
@@ -1448,7 +1500,13 @@ def get_user_profile(username):
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                        'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                        'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -1473,7 +1531,13 @@ def get_user_profile(username):
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
         
         # Prepare user profile data
@@ -1725,7 +1789,13 @@ def get_personalized_feed():
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
                         'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
-                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else []
+                        'hashtags': [hashtag.hashtag.name for hashtag in original_yap.hashtags] if original_yap.hashtags else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -1754,7 +1824,13 @@ def get_personalized_feed():
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
         
         return jsonify({
@@ -2071,7 +2147,7 @@ def get_top_yaps():
             RetweetUser, RetweetUser.id == RetweetYap.user_id
         ).filter(
             RetweetYap.original_yap_id == YapAlias.id
-        ).correlate(YapAlias).scalar_subquery()
+        ).correlate(YapAlias).scalar_subquery()/feed
         
         # Calculate total weighted engagement
         weighted_engagement = (
@@ -2150,7 +2226,13 @@ def get_top_yaps():
                         'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
-                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
+                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -2174,7 +2256,13 @@ def get_top_yaps():
                 'retweets_count': len(yap.retweets),
                 'badges': badges_data,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
         
         return jsonify({
@@ -2362,7 +2450,13 @@ def get_public_user_profile(username):
                         'weighted_retweets_count': get_weighted_retweets_count(original_yap.id),
                         'retweets_count': len(original_yap.retweets),
                         'badges': original_badges_data,
-                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else []
+                        'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in original_yap.media] if original_yap.media else [],
+                        'community': {
+                            'id': original_yap.community_id,
+                            'name': Community.query.get(original_yap.community_id).name,
+                            'slug': Community.query.get(original_yap.community_id).slug,
+                            'privacy_type': Community.query.get(original_yap.community_id).privacy_type
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
                     }
             
             yaps_list.append({
@@ -2386,7 +2480,13 @@ def get_public_user_profile(username):
                 'retweets_count': len(yap.retweets),
                 'badges': badges_for_yap,
                 'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
-                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else []
+                'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
+                'community': {
+                    'id': yap.community_id,
+                    'name': Community.query.get(yap.community_id).name,
+                    'slug': Community.query.get(yap.community_id).slug,
+                    'privacy_type': Community.query.get(yap.community_id).privacy_type
+                } if yap.community_id and Community.query.get(yap.community_id) else None
             })
         
         # Build profile response
