@@ -70,6 +70,7 @@ def create_app():
         'https://www.seller.camposocial.app',
         'http://localhost:3001',
         'http://127.0.0.1:3001',
+        'https://camposocial-client-staging-1088412075327.europe-west3.run.app'
     }
 
     # Load additional origins from environment variables

@@ -472,7 +472,7 @@ def github_oauth_callback():
             return jsonify({"error": "Authorization code not provided"}), 400
         
         # Exchange code for access token
-        client_id = os.environ.get('GITHUB_CLIENT_ID')
+        client_id = os.environ.get('GH_CLIENT_ID')
         client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
         
         if not client_id or not client_secret:
@@ -502,7 +502,7 @@ def github_oauth_callback():
         
         if code:
             # Exchange code for access token (same logic as GET)
-            client_id = os.environ.get('GITHUB_CLIENT_ID')
+            client_id = os.environ.get('GH_CLIENT_ID')
             client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
             
             if not client_id or not client_secret:
@@ -539,8 +539,8 @@ def github_oauth_login():
         return jsonify({"error": "Authorization code required"}), 400
     
     # Exchange code for token
-    client_id = os.environ.get('GITHUB_CLIENT_ID')
-    client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+    client_id = os.environ.get('GH_CLIENT_ID')
+    client_secret = os.environ.get('GH_CLIENT_SECRET')
     
     if not client_id or not client_secret:
         return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
@@ -573,8 +573,8 @@ def github_oauth_signup():
         return jsonify({"error": "Authorization code required"}), 400
     
     # Exchange code for token
-    client_id = os.environ.get('GITHUB_CLIENT_ID')
-    client_secret = os.environ.get('GITHUB_CLIENT_SECRET')
+    client_id = os.environ.get('GH_CLIENT_ID')
+    client_secret = os.environ.get('GH_CLIENT_SECRET')
     
     if not client_id or not client_secret:
         return jsonify({"error": "GitHub OAuth credentials not configured"}), 500
