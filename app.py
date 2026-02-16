@@ -232,7 +232,11 @@ def create_app():
     # Register Debug/Admin blueprint for monitoring
     from views.debug_view import debug_bp
     app.register_blueprint(debug_bp, url_prefix='/camposocial/api')
-    
+
+    # Link preview (Open Graph / Spotify) for yaps
+    from views.link_preview_view import link_preview_bp
+    app.register_blueprint(link_preview_bp, url_prefix='/camposocial/api')
+
     # Register API documentation blueprint
     app.register_blueprint(api_doc_bp)
     app.register_blueprint(api_explorer_bp)

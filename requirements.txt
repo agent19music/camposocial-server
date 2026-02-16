@@ -90,6 +90,9 @@ intasend-python
 # Email
 resend>=2.19.0
 
+# HTML parsing (link preview / Open Graph)
+beautifulsoup4>=4.12.0
+
 # Other
 packaging==23.2
 six==1.16.0
