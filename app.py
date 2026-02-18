@@ -210,6 +210,10 @@ def create_app():
     from views.device_view import device_bp
     app.register_blueprint(device_bp, url_prefix='/camposocial/api')
     
+    # Register Signal Protocol E2EE blueprint
+    from views.signal_view import signal_bp
+    app.register_blueprint(signal_bp, url_prefix='/camposocial/api')
+    
     # Advanced messaging functionality is now merged into message_bp
     
 
