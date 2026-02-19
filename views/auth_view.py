@@ -265,13 +265,17 @@ def verify_otp():
 @auth_bp.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
-    username = data.get('username')
+    identifier = data.get('username') or data.get('identifier')  # Support both 'username' and 'identifier' fields
     password = data.get('password')
 
-    if not username:
-        return jsonify(message="Username is required"), 400
+    if not identifier:
+        return jsonify(message="Username or email is required"), 400
 
-    user = Users.query.filter_by(username=username).first()
+    # Check if identifier is email (contains @) or username
+    if '@' in identifier:
+        user = Users.query.filter_by(email=identifier).first()
+    else:
+        user = Users.query.filter_by(username=identifier).first()
     if user:
         # Check if non-OAuth user has verified their email
         if not user.is_oauth_user and not user.email_verified:

@@ -192,6 +192,11 @@ class Message(db.Model):
     is_encrypted = db.Column(db.Boolean, default=True)  # Track if message is encrypted
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     
+    # Signal Protocol fields
+    message_type = db.Column(db.String(20), nullable=True)  # 'prekey' or 'whisper' for Signal, null for legacy NaCl
+    sender_device_id = db.Column(db.String(36), nullable=True)  # Sender's device ID for Signal
+    sender_registration_id = db.Column(db.Integer, nullable=True)  # Sender's registration ID for Signal
+    
     # Foreign Keys
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     conversation_id = db.Column(db.String, db.ForeignKey('conversations.id'), nullable=False)
@@ -1725,6 +1730,104 @@ class MessageRecipientKey(db.Model):
 
 
 # ============================================================================
+# Signal Protocol E2EE Models
+# ============================================================================
+
+class SignalIdentityKey(db.Model):
+    """Stores Signal Protocol identity keys for users/devices.
+    
+    Each device has a long-lived identity key pair. The public key is stored
+    here for other users to fetch when establishing sessions.
+    """
+    __tablename__ = 'signal_identity_keys'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    device_id = db.Column(db.String(36), nullable=False)
+    identity_key = db.Column(db.Text, nullable=False)  # Base64 encoded public key
+    registration_id = db.Column(db.Integer, nullable=False)  # Device registration ID
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'device_id', name='uq_signal_identity_user_device'),
+    )
+    
+    user = db.relationship('Users', backref=db.backref('signal_identity_keys', lazy='dynamic'))
+    
+    def to_dict(self):
+        return {
+            'user_id': self.user_id,
+            'device_id': self.device_id,
+            'identity_key': self.identity_key,
+            'registration_id': self.registration_id,
+            'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
+        }
+
+
+class SignalSignedPreKey(db.Model):
+    """Stores Signal Protocol signed pre-keys.
+    
+    Each device has one active signed pre-key at a time, signed by the
+    identity key. These are medium-lived and rotated periodically.
+    """
+    __tablename__ = 'signal_signed_prekeys'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    device_id = db.Column(db.String(36), nullable=False)
+    key_id = db.Column(db.Integer, nullable=False)
+    public_key = db.Column(db.Text, nullable=False)  # Base64 encoded
+    signature = db.Column(db.Text, nullable=False)   # Base64 encoded signature
+    timestamp = db.Column(db.BigInteger, nullable=False)  # When key was generated
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'device_id', 'key_id', name='uq_signal_signed_prekey'),
+    )
+    
+    user = db.relationship('Users', backref=db.backref('signal_signed_prekeys', lazy='dynamic'))
+    
+    def to_dict(self):
+        return {
+            'key_id': self.key_id,
+            'public_key': self.public_key,
+            'signature': self.signature,
+            'timestamp': self.timestamp,
+        }
+
+
+class SignalOneTimePreKey(db.Model):
+    """Stores Signal Protocol one-time pre-keys.
+    
+    Each device uploads a batch of one-time pre-keys. Each key is consumed
+    once when another user establishes a session. Keys are replenished
+    when the count gets low.
+    """
+    __tablename__ = 'signal_onetime_prekeys'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    device_id = db.Column(db.String(36), nullable=False)
+    key_id = db.Column(db.Integer, nullable=False)
+    public_key = db.Column(db.Text, nullable=False)  # Base64 encoded
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'device_id', 'key_id', name='uq_signal_onetime_prekey'),
+        db.Index('idx_signal_onetime_user_device', 'user_id', 'device_id'),
+    )
+    
+    user = db.relationship('Users', backref=db.backref('signal_onetime_prekeys', lazy='dynamic'))
+    
+    def to_dict(self):
+        return {
+            'key_id': self.key_id,
+            'public_key': self.public_key,
+        }
+
+
+# ============================================================================
 # Database Indexes for Performance Optimization
 # ============================================================================
 
@@ -1745,3 +1848,8 @@ db.Index('idx_conversation_users', Conversation.user1_id, Conversation.user2_id)
 db.Index('idx_user_devices_user', UserDevice.user_id, UserDevice.is_active)
 db.Index('idx_message_recipient_keys_message', MessageRecipientKey.message_id)
 db.Index('idx_message_recipient_keys_device', MessageRecipientKey.device_id)
+
+# Signal Protocol Indexes
+db.Index('idx_signal_identity_user_device', SignalIdentityKey.user_id, SignalIdentityKey.device_id)
+db.Index('idx_signal_signed_prekey_user_device', SignalSignedPreKey.user_id, SignalSignedPreKey.device_id)
+db.Index('idx_signal_onetime_prekey_user_device', SignalOneTimePreKey.user_id, SignalOneTimePreKey.device_id)

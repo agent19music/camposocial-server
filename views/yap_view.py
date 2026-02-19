@@ -358,7 +358,8 @@ def fetch_yaps():
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -389,7 +390,8 @@ def fetch_yaps():
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
 
         # Return JSON response with pagination info
@@ -470,7 +472,8 @@ def get_specific_yap(yap_id):
                         'name': Community.query.get(original_yap.community_id).name,
                         'slug': Community.query.get(original_yap.community_id).slug,
                         'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                    } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                    } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                    'poll_id': original_yap.poll_id
                 }
 
         # Serialize yap with its replies
@@ -518,8 +521,9 @@ def get_specific_yap(yap_id):
             'replies_count': len(yap.replies),
             'likes_count': len(yap.likes),
             'weighted_likes_count': get_weighted_likes_count(yap.id),
+            'weighted_replies_count': get_weighted_replies_count(yap.id),
+            'weighted_retweets_count': get_weighted_retweets_count(yap.id),
             'retweets_count': len(yap.retweets),
-            'badges': badges_data,
             'badges': badges_data,
             'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
             'hashtags': [hashtag.hashtag.name for hashtag in yap.hashtags] if yap.hashtags else [],
@@ -528,7 +532,8 @@ def get_specific_yap(yap_id):
                 'name': Community.query.get(yap.community_id).name,
                 'slug': Community.query.get(yap.community_id).slug,
                 'privacy_type': Community.query.get(yap.community_id).privacy_type
-            } if yap.community_id and Community.query.get(yap.community_id) else None
+            } if yap.community_id and Community.query.get(yap.community_id) else None,
+            'poll_id': yap.poll_id
         }
 
         return jsonify(yap_data), 200
@@ -596,7 +601,8 @@ def get_user_yaps(user_id):
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -627,7 +633,8 @@ def get_user_yaps(user_id):
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
 
         return jsonify({
@@ -1068,7 +1075,8 @@ def get_trending_yaps():
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -1100,7 +1108,8 @@ def get_trending_yaps():
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
         
         return jsonify({
@@ -1506,7 +1515,8 @@ def get_user_profile(username):
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -1537,7 +1547,8 @@ def get_user_profile(username):
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
         
         # Prepare user profile data
@@ -1795,7 +1806,8 @@ def get_personalized_feed():
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -1830,7 +1842,8 @@ def get_personalized_feed():
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
         
         return jsonify({
@@ -2232,7 +2245,8 @@ def get_top_yaps():
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -2262,7 +2276,8 @@ def get_top_yaps():
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
         
         return jsonify({
@@ -2456,7 +2471,8 @@ def get_public_user_profile(username):
                             'name': Community.query.get(original_yap.community_id).name,
                             'slug': Community.query.get(original_yap.community_id).slug,
                             'privacy_type': Community.query.get(original_yap.community_id).privacy_type
-                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None
+                        } if original_yap.community_id and Community.query.get(original_yap.community_id) else None,
+                        'poll_id': original_yap.poll_id
                     }
             
             yaps_list.append({
@@ -2486,7 +2502,8 @@ def get_public_user_profile(username):
                     'name': Community.query.get(yap.community_id).name,
                     'slug': Community.query.get(yap.community_id).slug,
                     'privacy_type': Community.query.get(yap.community_id).privacy_type
-                } if yap.community_id and Community.query.get(yap.community_id) else None
+                } if yap.community_id and Community.query.get(yap.community_id) else None,
+                'poll_id': yap.poll_id
             })
         
         # Build profile response
@@ -2598,7 +2615,8 @@ def get_public_yap_by_slug(slug):
             # Skip replies from private users
             if reply.user.is_private:
                 continue
-            engagement = len([l for l in reply.likes if l.reply_id == reply.id]) + len(reply.child_replies)
+            reply_likes_count = Like.query.filter_by(reply_id=reply.id).count()
+            engagement = reply_likes_count + len(reply.child_replies)
             replies_with_engagement.append((reply, engagement))
         
         # Sort by engagement and take top 5
@@ -2619,7 +2637,7 @@ def get_public_yap_by_slug(slug):
                     'display_name': reply.user.display_name,
                     'avatar': reply.user.avatar
                 },
-                'likes_count': len([l for l in reply.likes if l.reply_id == reply.id]),
+                'likes_count': Like.query.filter_by(reply_id=reply.id).count(),
                 'child_replies_count': len(reply.child_replies)
             })
         
@@ -2640,6 +2658,9 @@ def get_public_yap_by_slug(slug):
             'replies': replies_list,
             'replies_count': len(yap.replies),
             'likes_count': len(yap.likes),
+            'weighted_likes_count': get_weighted_likes_count(yap.id),
+            'weighted_replies_count': get_weighted_replies_count(yap.id),
+            'weighted_retweets_count': get_weighted_retweets_count(yap.id),
             'retweets_count': len(yap.retweets),
             'badges': badges_data,
             'media': [{'id': media.id, 'url': media.media_url, 'type': media.media_type} for media in yap.media] if yap.media else [],
