@@ -127,11 +127,24 @@ def _serialize_message(message: Message, current_user_id: int, device_id: str = 
         ).first()
         
         if device_key:
-            result['device_ciphertext'] = device_key.encrypted_content
-            result['device_nonce'] = device_key.nonce
-            result['has_device_key'] = True
+            if device_key.nonce == 'signal':
+                # Signal Protocol payload – stored as JSON in encrypted_content
+                try:
+                    result['signal_payload'] = json.loads(device_key.encrypted_content)
+                except Exception:
+                    result['signal_payload'] = {'ciphertext': device_key.encrypted_content}
+                result['has_device_key'] = True
+            else:
+                # Legacy NaCl payload
+                result['device_ciphertext'] = device_key.encrypted_content
+                result['device_nonce'] = device_key.nonce
+                result['has_device_key'] = True
         else:
             result['has_device_key'] = False
+    
+    # Include Signal-specific metadata
+    result['message_type'] = getattr(message, 'message_type', None)
+    result['sender_device_id'] = getattr(message, 'sender_device_id', None)
     
     return result
 
@@ -183,8 +196,13 @@ def send_message():
         reply_to = payload.get('reply_to')
         media_payload = payload.get('media', [])
         
-        # Multi-device E2EE: per-device encrypted payloads
+        # Multi-device E2EE: per-device encrypted payloads (legacy NaCl format)
         encrypted_payloads = payload.get('encrypted_payloads', {})
+        
+        # Signal Protocol: per-device encrypted payloads in Signal format
+        signal_payloads = payload.get('signal_payloads', {})
+        message_type = payload.get('message_type')  # 'signal', 'prekey', 'whisper', or 'plaintext'
+        sender_device_id = payload.get('sender_device_id')
 
         if not recipient_id:
             return jsonify({'error': 'recipient_id is required'}), 400
@@ -222,6 +240,8 @@ def send_message():
             conversation_id=conversation.id,
             reply_to_id=reply_to,
             is_encrypted=encrypted_flag,
+            message_type=message_type,
+            sender_device_id=sender_device_id,
         )
 
         db.session.add(message)
@@ -253,6 +273,34 @@ def send_message():
                         nonce=device_nonce
                     )
                     db.session.add(recipient_key)
+
+        # Signal Protocol: Store per-device Signal payloads
+        # Signal payloads are stored as JSON; nonce='signal' is the sentinel
+        if signal_payloads and isinstance(signal_payloads, dict):
+            for device_id, sp in signal_payloads.items():
+                if not isinstance(sp, dict):
+                    continue
+
+                # Accept payload with at minimum a ciphertext field
+                sp_ciphertext = sp.get('ciphertext') or sp.get('body')
+                if not sp_ciphertext:
+                    continue
+
+                # Device may not be registered yet (first-time Signal setup).
+                # Store the payload regardless so the receiver can decrypt even
+                # if the device record hasn't been flushed yet.
+                device_obj = UserDevice.query.filter_by(
+                    id=device_id, is_active=True
+                ).first()
+
+                if device_obj:
+                    signal_key = MessageRecipientKey(
+                        message_id=message.id,
+                        device_id=device_id,
+                        encrypted_content=json.dumps(sp),  # Store full Signal payload as JSON
+                        nonce='signal'  # Sentinel to distinguish from NaCl payloads
+                    )
+                    db.session.add(signal_key)
 
         attachments = []
         for media_item in media_payload:

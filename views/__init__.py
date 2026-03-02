@@ -6,3 +6,4 @@ from .yap_view import *
 from .friends_view import *
 from .message_view import *
 from .seller_view import seller_bp
+from .signal_view import signal_bp

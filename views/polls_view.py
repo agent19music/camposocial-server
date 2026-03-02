@@ -105,7 +105,7 @@ def create_poll():
             title=data['title'],
             description=data.get('description'),
             creator_id=user_id,
-            group_id=group_id,
+            community_id=group_id,
             poll_type=data.get('poll_type', 'single'),
             category=data.get('category', 'general'),
             is_anonymous=data.get('is_anonymous', False)
@@ -135,7 +135,7 @@ def create_poll():
             group = Community.query.get(group_id)
             # Notify group members
             members = CommunityMember.query.filter_by(
-                group_id=group_id,
+                community_id=group_id,
                 is_active=True
             ).all()
             
@@ -147,7 +147,7 @@ def create_poll():
                         recipient_id=member.user_id,
                         sender_id=user_id,
                         poll_id=poll.id,
-                        group_id=group_id,
+                        community_id=group_id,
                         title='New Poll',
                         message=f'New poll in {group.name}: "{poll.title}"',
                         action_url=f'/polls/{poll.id}'
@@ -162,7 +162,7 @@ def create_poll():
                 'id': poll.id,
                 'title': poll.title,
                 'description': poll.description,
-                'group_id': poll.group_id,
+                'group_id': poll.community_id,
                 'category': poll.category,
                 'is_anonymous': poll.is_anonymous,
                 'ends_at': poll.ends_at.isoformat() if poll.ends_at else None,
@@ -198,13 +198,13 @@ def get_polls():
         
         # Filter by group if specified
         if group_id:
-            query = query.filter(Poll.group_id == group_id)
+            query = query.filter(Poll.community_id == group_id)
         else:
             # Show campus-wide polls and polls from user's groups
             query = query.filter(
                 or_(
-                    Poll.group_id == None,  # Campus-wide polls
-                    Poll.group_id.in_(user_group_ids) if user_group_ids else False
+                    Poll.community_id == None,  # Campus-wide polls
+                    Poll.community_id.in_(user_group_ids) if user_group_ids else False
                 )
             )
         
@@ -238,8 +238,8 @@ def get_polls():
             
             # Get group info if applicable
             group = None
-            if poll.group_id:
-                group = Community.query.get(poll.group_id)
+            if poll.community_id:
+                group = Community.query.get(poll.community_id)
             
             polls.append({
                 'id': poll.id,
@@ -305,8 +305,8 @@ def get_poll_details(poll_id):
         
         # Get group info if applicable
         group = None
-        if poll.group_id:
-            group = Community.query.get(poll.group_id)
+        if poll.community_id:
+            group = Community.query.get(poll.community_id)
         
         # Format options
         options_data = []
@@ -538,9 +538,9 @@ def delete_poll(poll_id):
         is_creator = poll.creator_id == user_id
         is_group_admin = False
         
-        if poll.group_id:
+        if poll.community_id:
             member = CommunityMember.query.filter_by(
-                group_id=poll.group_id,
+                community_id=poll.community_id,
                 user_id=user_id,
                 is_active=True
             ).first()
@@ -593,8 +593,8 @@ def get_trending_polls():
                 Poll.ends_at > datetime.utcnow()
             ),
             or_(
-                Poll.group_id == None,
-                Poll.group_id.in_(user_community_ids) if user_community_ids else False
+                Poll.community_id == None,
+                Poll.community_id.in_(user_community_ids) if user_community_ids else False
             )
         ).group_by(Poll.id).order_by(
             func.count(PollVote.id).desc()
@@ -656,8 +656,8 @@ def get_user_polls():
         for poll in paginated.items:
             # Get group info if applicable
             group = None
-            if poll.group_id:
-                group = Community.query.get(poll.group_id)
+            if poll.community_id:
+                group = Community.query.get(poll.community_id)
             
             polls.append({
                 'id': poll.id,
